@@ -1,26 +1,10 @@
-use std::{env, fs, path::PathBuf};
-
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
+// IA'GS modification: telemetry is disabled; compile only on supported Macs.
 fn main() {
-    let manifest_dir = PathBuf::from(
-        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by Cargo"),
-    );
-    let endpoint_path = manifest_dir.join("../config/telemetry-endpoint.txt");
-    println!("cargo:rerun-if-changed={}", endpoint_path.display());
-
-    let endpoint = fs::read_to_string(&endpoint_path)
-        .unwrap_or_else(|error| {
-            panic!(
-                "failed to read telemetry endpoint from {}: {error}",
-                endpoint_path.display()
-            )
-        })
-        .trim()
-        .to_owned();
-    assert!(
-        !endpoint.is_empty(),
-        "telemetry endpoint configuration must not be empty"
-    );
-    println!("cargo:rustc-env=OOOSPLAT_TELEMETRY_ENDPOINT={endpoint}");
-
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
+        || std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("aarch64")
+    {
+        panic!("IA'GS currently supports Apple Silicon macOS only");
+    }
     tauri_build::build()
 }

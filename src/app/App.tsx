@@ -1,18 +1,19 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   Blend, ChevronDown, ChevronRight, CircleAlert, Clapperboard, Cpu, FileBox, Images,
   Download, Eye, FolderOpen, LoaderCircle, MapPin, Minus, Play, Plus, RotateCcw, Square, Trash2,
   Languages, Settings2, X, Zap,
 } from "lucide-react";
-import appLogo from "../../assets/app-icon.svg";
-import packageMetadata from "../../package.json";
-import { TelemetryPreferences } from "../components/TelemetryPreferences";
+import { TaskSidebar } from "../components/TaskSidebar";
+import { StudioPreferences, useStudioAppearance } from "../components/StudioPreferences";
+import { PhotoPreparation } from "../components/PhotoPreparation";
 import {
   cancelPipeline, checkEngines, confirmAndDeleteProject, confirmLargeImageSequence,
   estimateProjectRuntime, exportPly, getAppRuntimeStatus, getProjectOverview, onPipelineEvent, probeAndPlan, revealProject, revealProjectLogs,
-  selectImageSequence, selectProjectsRoot, selectVideo,
+  selectProjectsRoot,
   setProjectsRoot, startPipeline, prepareGaussianPreview, releaseGaussianPreview,
-  initializeTelemetry, setTelemetryConsent, resumePipeline,
+  resumePipeline,
 } from "../lib/backend";
 import { startElapsedTicker } from "../lib/elapsedTimer";
 import { pipelineCommandError, pipelineErrorMessage, pipelineWasCancelled, type PipelineFailureKind } from "../lib/pipelineError";
@@ -20,7 +21,6 @@ import { localizePipelineMessage, useI18n, type TranslationKey } from "../i18n";
 import { useAppStore } from "../stores/appStore";
 import { useGaussianTransformStore } from "../stores/gaussianTransformStore";
 import type { EngineStatus, InputType, ProjectStatus, ProjectSummary, Quality } from "../types/pipeline";
-import type { TelemetryPreferences as TelemetryPreferencesState } from "../types/telemetry";
 
 const GaussianViewer = lazy(() => import("../components/GaussianViewer").then((module) => ({ default: module.GaussianViewer })));
 const CANCELLATION_OVERLAY_DELAY_MS = 300;
@@ -114,7 +114,6 @@ function FailureGuidanceDialog({ failure, action, onClose, onRetry, onOpenLogs }
 const qualities: Array<{ value: Quality; label: TranslationKey; description: TranslationKey }> = [
   { value: "fast", label: "quality.fast", description: "quality.fastHint" },
   { value: "balanced", label: "quality.balanced", description: "quality.balancedHint" },
-  { value: "high", label: "quality.high", description: "quality.highHint" },
 ];
 
 const stages = [
@@ -179,8 +178,7 @@ function ProjectRow({ project, busy, previewing, previewDisabled, deleting, reve
         <strong>{project.name}</strong>
         <span className="status-copy">{t(statusKey[project.status])}</span>
       </div>
-      <p className="project-path" title={project.projectPath}>{project.projectPath}</p>
-      {project.failureMessage && <p className="project-failure">{localizePipelineMessage(locale, project.failureMessage)}</p>}
+      {project.failureMessage && <details className="project-failure"><summary>{t("failure.details")}</summary><p>{localizePipelineMessage(locale, project.failureMessage)}</p></details>}
       {project.registeredRatio != null && project.registeredRatio < 0.8 && <p className="project-quality-warning" role="status"><CircleAlert size={13} />{t("result.lowRegistration", { value: (project.registeredRatio * 100).toFixed(1) })}</p>}
     </div>
     <dl className="project-stats">
@@ -204,6 +202,18 @@ export function App() {
   const loadGaussian = useGaussianTransformStore((state) => state.load);
   const closeGaussian = useGaussianTransformStore((state) => state.close);
   const isRunning = store.phase === "running";
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const viewerNavigation = useRef<(() => boolean) | null>(null);
+  const pendingDestination = useRef<string | null>(null);
+  const appearance = useStudioAppearance();
+  const L = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
+  const [taskName, setTaskName] = useState("");
+  const [selectedTask, setSelectedTask] = useState("draft");
+  const [photoKey, setPhotoKey] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const selectedProject = store.projects.find(p => p.id === selectedTask);
+  const showControl = selectedTask === "draft" || (selectedTask === activeTaskId && (isRunning || store.events.length > 0));
   const liveLogRef = useRef<HTMLDivElement>(null);
   const followLiveLogRef = useRef(true);
   const workspaceRef = useRef<HTMLElement>(null);
@@ -222,9 +232,7 @@ export function App() {
   const [liveElapsedMs, setLiveElapsedMs] = useState(0);
   const [isCancellationRequested, setIsCancellationRequested] = useState(false);
   const [showCancellationOverlay, setShowCancellationOverlay] = useState(false);
-  const [leftPanePercent, setLeftPanePercent] = useState(() => Math.min(68, Math.max(32, readSavedNumber("ooo-splat-left-pane", 44))));
-  const [uiScale, setUiScale] = useState(() => Math.min(140, Math.max(80, readSavedNumber("ooo-splat-ui-scale", 100))));
-  const [isResizing, setIsResizing] = useState(false);
+  const [uiScale, setUiScale] = useState(() => Math.min(140, Math.max(80, readSavedNumber("iags-ui-scale", 100))));
   const [viewMode, setViewMode] = useState<"tasks" | "preview">("tasks");
   const [openingPreviewProjectId, setOpeningPreviewProjectId] = useState<string | null>(null);
   const [closingPreviewProjectId, setClosingPreviewProjectId] = useState<string | null>(null);
@@ -233,14 +241,7 @@ export function App() {
   const [revealingProjectId, setRevealingProjectId] = useState<string | null>(null);
   const [failureDialog, setFailureDialog] = useState<FailureDialogState | null>(null);
   const [failureDialogAction, setFailureDialogAction] = useState<"retry" | "logs" | null>(null);
-  const [showZoomControls, setShowZoomControls] = useState(false);
-  const [telemetryPreferences, setTelemetryPreferences] = useState<TelemetryPreferencesState | null>(null);
-  const [privacySettingsOpen, setPrivacySettingsOpen] = useState(false);
-  const [telemetryBusy, setTelemetryBusy] = useState(false);
-  const [inputMenuOpen, setInputMenuOpen] = useState(false);
   const missingEngines = store.engines.filter((engine) => !engineReady(engine));
-  const completed = useMemo(() => store.projects.filter((project) => project.status === "completed"), [store.projects]);
-  const unfinished = useMemo(() => store.projects.filter((project) => project.status !== "completed"), [store.projects]);
   const progressEvent = useMemo(() => {
     if (!store.latestEvent || !["failed", "cancelled"].includes(store.latestEvent.stage)) return store.latestEvent;
     return [...store.events].reverse().find((event) => !["failed", "cancelled"].includes(event.stage)) ?? null;
@@ -323,16 +324,12 @@ export function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, [reconcileRuntimeState, viewMode]);
 
-  useEffect(() => {
-    void initializeTelemetry()
-      .then(setTelemetryPreferences)
-      .catch(() => undefined);
-  }, []);
 
   useEffect(() => {
     let unlisten: undefined | (() => void);
     void onPipelineEvent((event) => {
       store.receiveEvent(event);
+      if (event.kind === "stage" && event.stage === "created") void getProjectOverview().then(overview => { store.setProjects(overview.projects); const running = overview.projects.find(p => p.status === "running"); if (running) setActiveTaskId(running.id); }).catch(() => undefined);
       if (["completed", "failed", "cancelled"].includes(event.stage)) {
         setLiveElapsedMs(runElapsedOffset.current + event.elapsedMs);
       }
@@ -375,11 +372,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    try { window.localStorage.setItem("ooo-splat-left-pane", leftPanePercent.toFixed(1)); } catch { /* optional preference */ }
-  }, [leftPanePercent]);
-
-  useEffect(() => {
-    try { window.localStorage.setItem("ooo-splat-ui-scale", String(uiScale)); } catch { /* optional preference */ }
+    try { window.localStorage.setItem("iags-ui-scale", String(uiScale)); } catch { /* optional preference */ }
   }, [uiScale]);
 
   useEffect(() => {
@@ -390,33 +383,6 @@ export function App() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [viewMode]);
-
-  const resizePanes = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isResizing || !workspaceRef.current) return;
-    const bounds = workspaceRef.current.getBoundingClientRect();
-    const next = ((event.clientX - bounds.left) / bounds.width) * 100;
-    setLeftPanePercent(Math.min(68, Math.max(32, next)));
-  };
-
-  const stopResizing = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    setIsResizing(false);
-  };
-
-  const changeScale = (delta: number) => setUiScale((current) => Math.min(140, Math.max(80, current + delta)));
-
-  const changeTelemetryConsent = async (enabled: boolean) => {
-    if (telemetryBusy) return;
-    setTelemetryBusy(true);
-    try {
-      const preferences = await setTelemetryConsent(enabled);
-      setTelemetryPreferences(preferences);
-    } catch (error) {
-      store.setError(t("progress.privacyError", { detail: messageOf(error) }));
-    } finally {
-      setTelemetryBusy(false);
-    }
-  };
 
   const analyze = async (path: string, quality: Quality) => {
     store.setPhase("analyzing");
@@ -431,23 +397,6 @@ export function App() {
     }
   };
 
-  const chooseInput = async (inputType: InputType) => {
-    try {
-      const selected = inputType === "images" ? await selectImageSequence() : await selectVideo();
-      if (selected) {
-        store.setInputPath(selected, inputType);
-        await analyze(selected, store.quality);
-      }
-    } catch (error) {
-      store.setError(messageOf(error));
-    }
-  };
-
-  const chooseInputType = (inputType: InputType) => {
-    setInputMenuOpen(false);
-    if (inputType !== store.inputType) store.setInputPath(null, inputType);
-  };
-
   const chooseRoot = async () => {
     const selected = await selectProjectsRoot(store.projectsRoot);
     if (!selected) return;
@@ -455,6 +404,7 @@ export function App() {
       const settings = await setProjectsRoot(selected);
       store.setProjectsRoot(settings.projectsRoot);
       await refreshProjects();
+      store.setInputPath(null, "images"); setPhotoKey(key => key + 1);
     } catch (error) { store.setError(messageOf(error)); }
   };
 
@@ -479,7 +429,7 @@ export function App() {
   };
 
   const generate = async () => {
-    if (!store.inputPath || !store.plan || !store.projectsRoot) return;
+    if (!store.inputPath || !store.plan || !store.projectsRoot || !taskName.trim()) return;
     if (
       store.inputType === "images"
       && store.imageSequence?.requiresLargeSequenceConfirmation
@@ -493,8 +443,9 @@ export function App() {
     pipelineCommandPending.current = true;
     store.beginRun();
     try {
-      const result = await startPipeline(store.inputPath, store.quality, store.projectsRoot);
+      const result = await startPipeline(store.inputPath, store.quality, store.projectsRoot, taskName.trim());
       setLiveElapsedMs((current) => Math.max(current, result.durationMs));
+      setActiveTaskId(result.projectId);
       store.setResult(result);
       store.setPhase("completed");
     } catch (error) {
@@ -518,6 +469,7 @@ export function App() {
   };
 
   const resume = async (project: ProjectSummary) => {
+    setSelectedTask(project.id); setActiveTaskId(project.id); setTaskName(project.name);
     clearCancellationFeedback();
     runElapsedOffset.current = project.durationMs ?? 0;
     runStartedAt.current = Date.now();
@@ -533,6 +485,7 @@ export function App() {
     try {
       const result = await resumePipeline(project.id);
       setLiveElapsedMs((current) => Math.max(current, result.durationMs));
+      setActiveTaskId(result.projectId);
       store.setResult(result);
       store.setPhase("completed");
     } catch (error) {
@@ -560,6 +513,7 @@ export function App() {
       await reconcileRuntimeState();
       if (await confirmAndDeleteProject(project)) {
         await refreshProjects();
+        if (selectedTask === project.id) setSelectedTask("draft");
       }
     } catch (error) {
       store.setError(messageOf(error));
@@ -708,6 +662,8 @@ export function App() {
     if (!active || closingPreviewProjectId) return;
     setClosingPreviewProjectId(active.projectId);
     setViewMode("tasks");
+    const destination = pendingDestination.current; pendingDestination.current = null;
+    if (destination === "new") resetDraft(); else if (destination) setSelectedTask(destination);
     if (previewCloseWatchdog.current != null) window.clearTimeout(previewCloseWatchdog.current);
     previewCloseWatchdog.current = window.setTimeout(() => {
       previewCloseWatchdog.current = null;
@@ -726,76 +682,47 @@ export function App() {
     }
   }, [releasePreviewSession]);
 
-  if (viewMode === "preview") {
-    return <main className="app-shell preview-mode">
-      <Suspense fallback={<section className="preview-pane active preview-workspace"><div className="preview-empty"><LoaderCircle className="spin" size={24} /><strong>{t("preview.preparingModule")}</strong></div></section>}>
-        <GaussianViewer previewSessionId={previewSessionId} onExit={exitPreview} onDisposed={previewRendererDisposed} pipelineRunning={isRunning} />
-      </Suspense>
-    </main>;
-  }
+  const requestDestination = (destination: string) => {
+    pendingDestination.current = destination;
+    if (!viewerNavigation.current?.()) pendingDestination.current = null;
+  };
+  const selectTask = (id: string) => { if (viewMode === "preview") requestDestination(id); else setSelectedTask(id); };
+  const resetDraft = () => {
+    setSelectedTask("draft"); setTaskName(""); setActiveTaskId(null);
+    store.setInputPath(null, "images"); setPhotoKey(key => key + 1);
+  };
+  const newTask = () => {
+    if (isRunning || photoBusy) return;
+    if (viewMode === "preview") requestDestination("new"); else resetDraft();
+  };
 
-  return <main className={isResizing ? "app-shell resizing" : "app-shell"}>
+  return <main className="app-shell studio-shell" style={appearance.style}>
     <div className="interface-frame" style={{ "--ui-scale": uiScale / 100, "--ui-size": `${10000 / uiScale}%` } as CSSProperties}>
-    <header className="topbar">
-      <div className="brand-lockup"><span className="brand-mark"><img src={appLogo} alt="" aria-hidden="true" /></span><span className="brand-name">OOO<span>Splat</span></span><span className="version-tag">LOCAL / {packageMetadata.version}</span></div>
-      <div className="topbar-actions">
-        <button className="settings-action language-action" type="button" title={t("language.switchTo")} aria-label={t("language.switchTo")} onClick={toggleLocale}><Languages size={15} />{t("language.target")}</button>
-        {telemetryPreferences && <button className="settings-action" type="button" onClick={() => setPrivacySettingsOpen(true)}><Settings2 size={15} />{t("top.settings")}</button>}
-        <div className="engine-summary"><span className={missingEngines.length ? "status-light warning" : "status-light"} />{store.engines.length === 0 ? t("top.checkingEngines") : missingEngines.length ? t("top.engineIssues", { count: missingEngines.length }) : t("top.enginesReady")}</div>
-      </div>
-    </header>
-
-    <section className="workspace" ref={workspaceRef} style={{ "--left-pane-width": `${leftPanePercent}%` } as CSSProperties}>
-      <section className="control-pane" ref={controlPaneRef} aria-label={t("task.console")}>
-        <div className="pane-header"><h1>{t("task.create")}</h1><span className={isRunning ? "run-state active" : "run-state"}>{isRunning ? t("task.running") : t("task.idle")}</span></div>
-
-        <div className="form-section">
-          <label className="field-label">{t("input.label")}</label>
-          <div className="input-picker">
-            <div className="input-type-picker">
-              <button className="input-picker-toggle" type="button" disabled={isRunning} aria-label={t("input.typeAria")} aria-expanded={inputMenuOpen} onClick={() => setInputMenuOpen((open) => !open)}>
-                {store.inputType === "images" ? <Images size={16} /> : <Clapperboard size={16} />}
-                <span>{store.inputType === "images" ? t("input.images") : t("input.video")}</span>
-                <ChevronDown size={14} />
-              </button>
-              {inputMenuOpen && <div className="input-picker-menu" role="menu">
-                <button type="button" role="menuitemradio" aria-checked={store.inputType === "video"} onClick={() => chooseInputType("video")}><Clapperboard size={15} /><span><strong>{t("input.video")}</strong><small>{t("input.videoTypes")}</small></span></button>
-                <button type="button" role="menuitemradio" aria-checked={store.inputType === "images"} onClick={() => chooseInputType("images")}><Images size={15} /><span><strong>{t("input.images")}</strong><small>{t("input.imageTypes")}</small></span></button>
-              </div>}
-            </div>
-            <button className="path-picker" type="button" disabled={isRunning} onClick={() => void chooseInput(store.inputType)}>
-              {store.inputType === "images" ? <Images size={18} /> : <Clapperboard size={18} />}
-              <span>
-                <strong>{store.inputPath ? basename(store.inputPath) : store.inputType === "images" ? t("input.selectImages") : t("input.selectVideo")}</strong>
-                <small>{store.inputPath ?? (store.inputType === "images" ? t("input.selectImagesHint") : t("input.selectVideoHint"))}</small>
-              </span>
-            </button>
-          </div>
-        </div>
+    <TaskSidebar projects={store.projects} selected={selectedTask} draftName={activeTaskId ? "" : taskName.trim()} busy={isRunning || photoBusy} onNew={newTask} onSelect={selectTask} onSettings={() => setSettingsOpen(true)} onRefresh={() => void refreshProjects().catch(error => store.setError(messageOf(error)))} />
+    <section className={`studio-workspace ${viewMode === "preview" ? "showing-preview" : ""}`} ref={workspaceRef}>
+      {viewMode === "preview" && <div className="studio-model"><Suspense fallback={<div className="preview-empty"><LoaderCircle className="spin" size={24}/><strong>{t("preview.preparingModule")}</strong></div>}><GaussianViewer navigationRef={viewerNavigation} onNavigationCancelled={() => { pendingDestination.current = null; }} previewSessionId={previewSessionId} onExit={exitPreview} onDisposed={previewRendererDisposed} pipelineRunning={isRunning}/></Suspense></div>}
+      <section className="control-pane" ref={controlPaneRef} hidden={!showControl || viewMode === "preview"} aria-label={t("task.console")}>
+        <div className="pane-header"><h1>{isRunning || store.events.length > 0 ? taskName || L("当前任务", "Current task") : L("新建任务", "New task")}</h1></div>
+        <div className="task-form" hidden={isRunning || store.events.length > 0}>
+        <div className="form-section name-section"><label className="field-label" htmlFor="task-name">{L("任务名称", "Task name")}</label><input id="task-name" maxLength={80} required value={taskName} onChange={e => setTaskName(e.target.value)} /></div>
+        <PhotoPreparation key={photoKey} taskName={taskName.trim()} projectsRoot={store.projectsRoot} disabled={isRunning} onBusy={setPhotoBusy}
+          onInvalidate={() => store.setInputPath(null, "images")}
+          onReady={async (path) => { store.setInputPath(path, "images"); await analyze(path, store.quality); if (!useAppStore.getState().plan) throw new Error(useAppStore.getState().error ?? L("照片分析失败", "Photo analysis failed")); }} />
 
         <div className="form-section">
           <label className="field-label">{t("project.root")}</label>
-          <button className="path-picker compact" type="button" disabled={isRunning} onClick={() => void chooseRoot()}>
-            <FolderOpen size={18} /><span><strong>{store.projectsRoot ? basename(store.projectsRoot) : t("project.readingRoot")}</strong><small>{store.projectsRoot || "Documents / SplatStudio / Projects"}</small></span><ChevronRight size={16} />
+          <button className="path-picker compact" type="button" disabled={isRunning || photoBusy} onClick={() => void chooseRoot()}>
+            <FolderOpen size={18} /><span><strong>{store.projectsRoot ? basename(store.projectsRoot) : t("project.readingRoot")}</strong><small>{store.projectsRoot || "Documents / IAGS / Projects"}</small></span><ChevronRight size={16} />
           </button>
-          <p className="field-note">{t("project.rootHint")}</p>
         </div>
 
         <div className="form-section">
           <label className="field-label">{t("quality.label")}</label>
           <div className="quality-list" role="radiogroup">
-            {qualities.map((quality) => <button key={quality.value} type="button" role="radio" disabled={isRunning} aria-checked={store.quality === quality.value} className={store.quality === quality.value ? "quality-option selected" : "quality-option"} onClick={() => void chooseQuality(quality.value)}>
-              <span className="radio-mark"><span /></span><span><strong>{t(quality.label)}</strong><small>{t(quality.description)}</small></span>
+            {qualities.map((quality) => <button key={quality.value} type="button" role="radio" disabled={isRunning || photoBusy} aria-checked={store.quality === quality.value} className={store.quality === quality.value ? "quality-option selected" : "quality-option"} onClick={() => void chooseQuality(quality.value)}>
+              <span className="radio-mark"><span /></span><span><strong>{t(quality.label)}</strong></span>
             </button>)}
           </div>
-        </div>
-
-        <div className={`acceleration-status ${store.colmapAcceleration?.backend === "gpu" ? "gpu" : store.colmapAcceleration && !["nvidiaSmiNotFound", "noNvidiaGpu", "macOsCpuOnly"].includes(store.colmapAcceleration.reasonCode) ? "warning" : "cpu"}`} aria-live="polite">
-          <span className="acceleration-icon">{store.colmapAcceleration?.backend === "gpu" ? <Zap size={17} fill="currentColor" /> : store.colmapAcceleration && !["nvidiaSmiNotFound", "noNvidiaGpu", "macOsCpuOnly"].includes(store.colmapAcceleration.reasonCode) ? <CircleAlert size={17} /> : store.colmapAcceleration ? <Cpu size={17} /> : <LoaderCircle className="spin" size={17} />}</span>
-          <span>
-            <strong>{store.colmapAcceleration == null ? t("gpu.detecting") : store.colmapAcceleration.backend === "gpu" ? t("gpu.enabled") : t("gpu.cpu")}</strong>
-            <small>{store.colmapAcceleration == null ? t("gpu.reading") : store.colmapAcceleration.backend === "gpu" && store.colmapAcceleration.device ? `${store.colmapAcceleration.device.name}${store.colmapAcceleration.device.totalMemoryMb ? ` · ${t("gpu.memory", { value: (store.colmapAcceleration.device.totalMemoryMb / 1024).toFixed(1) })}` : ""} · ${t("gpu.driver", { value: store.colmapAcceleration.device.driverVersion })} · Compute Capability ${store.colmapAcceleration.device.computeCapability}` : store.colmapAcceleration.reasonCode === "macOsCpuOnly" ? localizePipelineMessage(locale, store.colmapAcceleration.reason) : `${localizePipelineMessage(locale, store.colmapAcceleration.reason)} · ${t("gpu.requirements", { driver: store.colmapAcceleration.requirements.minimumDriverVersion, capability: store.colmapAcceleration.requirements.minimumComputeCapability })}`}</small>
-          </span>
         </div>
 
         {(store.video || store.imageSequence) && store.plan && <div className="source-metrics">
@@ -805,20 +732,18 @@ export function App() {
           <span title={store.estimate ? localizePipelineMessage(locale, store.estimate.basis) : undefined}><small>{t("metrics.estimate")}</small><b>{store.estimate ? t("metrics.approx", { value: formatDuration(store.estimate.estimatedMs) }) : t("metrics.analyzing")}</b>{store.estimate && <em>{formatDuration(store.estimate.lowerBoundMs)}–{formatDuration(store.estimate.upperBoundMs)}</em>}</span>
         </div>}
 
-        {(store.video?.hasAlpha || store.imageSequence?.hasAlpha) && <div className="alpha-source-status" role="status">
-          <Blend size={17} />
-          <span><strong>{store.inputType === "images" ? t("alpha.imagesTitle") : t("alpha.videoTitle")}</strong><small>{store.inputType === "images" ? t("alpha.imagesHint") : t("alpha.videoHint", { format: store.video?.pixelFormat || "Alpha" })}</small></span>
-        </div>}
-
         {store.imageSequence?.requiresLargeSequenceConfirmation && <div className="sequence-warning" role="status"><CircleAlert size={16} /><span><strong>{t("sequence.title")}</strong><small>{t("sequence.hint")}</small></span></div>}
 
-        {!isRunning && <button className="primary-action" type="button" disabled={!store.inputPath || !store.plan || !store.projectsRoot || store.phase === "analyzing" || missingEngines.length > 0} onClick={() => void generate()}>
+        {!isRunning && <button className="primary-action" type="button" disabled={photoBusy || !taskName.trim() || !store.inputPath || !store.plan || !store.projectsRoot || store.phase === "analyzing" || missingEngines.length > 0} onClick={() => void generate()}>
           {store.phase === "analyzing" ? <LoaderCircle className="spin" size={17} /> : <Play size={16} fill="currentColor" />}
           {store.phase === "analyzing" ? t("generate.analyzing") : t("generate.start")}
         </button>}
 
+        {missingEngines.length > 0 && <p className="inline-error" role="alert">{t("top.engineIssues", { count: missingEngines.length })}</p>}
+        </div>
+
         {(isRunning || store.events.length > 0) && <section className="live-process">
-          <div className="live-heading"><div><span className="live-dot" /><strong>{t("progress.title")}</strong></div><span className="mono">{store.progress.toFixed(1)}%</span></div>
+          <div className="live-heading"><div><span className="live-dot" /><strong>{t("progress.title")}</strong></div><span className="mono">{store.latestEvent?.indeterminate ? t("progress.running") : `${store.progress.toFixed(1)}%`}</span></div>
           <p className="current-message">{currentMessage}</p>
           <div className="process-metrics">
             <span><small>{t("progress.stage")}</small><b>{currentStageLabel(store.latestEvent?.stage, activeStageIndex)}</b></span>
@@ -833,10 +758,11 @@ export function App() {
               return <li key={key} className={className}><span /><b>{t(label)}</b>{index === activeStageIndex && isRunning && <small>{progressEvent?.indeterminate ? t("progress.running") : `${(progressEvent?.stageProgress ?? 0).toFixed(0)}%`}</small>}</li>;
             })}
           </ol>
-          <div className="log-toolbar"><span>{t("progress.log")}</span><small>{t("progress.logCount", { count: store.events.length })}</small></div>
+          <details className="task-log-details"><summary>{t("progress.log")}</summary>
           <div className="live-log" aria-live="polite" ref={liveLogRef} onScroll={updateLiveLogFollow}>
             {store.events.map((event, index) => <div className={`log-line ${event.level}`} key={`${event.sequence}-${index}`}><time>{new Date(event.timestamp).toLocaleTimeString(locale, { hour12: false })}</time><span>{event.engine ?? "system"}</span><p>{event.kind === "log" ? event.message : localizePipelineMessage(locale, event.message)}</p></div>)}
           </div>
+          </details>
           {isRunning && <button className="cancel-action" type="button" disabled={isCancellationRequested} onClick={() => void requestCancellation()}>{isCancellationRequested ? <LoaderCircle className="spin" size={13} /> : <Square size={12} fill="currentColor" />}{isCancellationRequested ? t("progress.terminating") : t("progress.cancel")}</button>}
         </section>}
 
@@ -860,53 +786,14 @@ export function App() {
         {store.error && <div className="inline-error"><CircleAlert size={16} /><span>{localizePipelineMessage(locale, store.error)}</span><button type="button" onClick={() => store.setError(null)}>{t("common.close")}</button></div>}
       </section>
 
-      <div
-        className="pane-resizer"
-        role="separator"
-        tabIndex={0}
-        aria-label={t("layout.resize")}
-        aria-orientation="vertical"
-        aria-valuemin={32}
-        aria-valuemax={68}
-        aria-valuenow={Math.round(leftPanePercent)}
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          event.currentTarget.setPointerCapture(event.pointerId);
-          setIsResizing(true);
-        }}
-        onPointerMove={resizePanes}
-        onPointerUp={stopResizing}
-        onPointerCancel={stopResizing}
-        onDoubleClick={() => setLeftPanePercent(44)}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-            event.preventDefault();
-            setLeftPanePercent((current) => Math.min(68, Math.max(32, current + (event.key === "ArrowLeft" ? -2 : 2))));
-          }
-          if (event.key === "Home") setLeftPanePercent(44);
-        }}
-      ><span /></div>
-
-      <section className="projects-pane" ref={projectsPaneRef} aria-label={t("history.aria")}>
-        <div className="pane-header"><h2>{t("history.title")}</h2><button className="refresh-action" type="button" disabled={isRunning} onClick={() => void refreshProjects()}><RotateCcw size={14} />{t("history.refresh")}</button></div>
-        <div className="archive-summary"><span><b>{completed.length}</b><small>{t("history.completed")}</small></span><span><b>{unfinished.length}</b><small>{t("history.unfinished")}</small></span></div>
-
-        {completed.length === 0 && unfinished.length === 0 && <div className="empty-state"><FileBox size={30} strokeWidth={1.4} /><strong>{t("history.emptyTitle")}</strong><p>{t("history.emptyHint")}</p></div>}
-
-        {completed.length > 0 && <div className="project-group"><div className="group-heading"><span>{t("history.completed")}</span><small>{t("history.projects", { count: completed.length })}</small></div>{completed.map((project) => <ProjectRow key={project.id} project={project} busy={isRunning} previewing={openingPreviewProjectId === project.id} previewDisabled={openingPreviewProjectId !== null || closingPreviewProjectId === project.id} deleting={deletingProjectId === project.id} revealing={revealingProjectId === project.id} onPreview={(item) => void previewProject(item)} onResume={() => undefined} onReveal={(item) => void showProject(item)} onDelete={(item) => void removeProject(item)} />)}</div>}
-        {unfinished.length > 0 && <div className="project-group unfinished"><div className="group-heading"><span>{t("history.unfinished")}</span><small>{t("history.projects", { count: unfinished.length })}</small></div>{unfinished.map((project) => <ProjectRow key={project.id} project={project} busy={isRunning} previewing={false} previewDisabled deleting={deletingProjectId === project.id} revealing={revealingProjectId === project.id} onPreview={() => undefined} onResume={(item) => void resume(item)} onReveal={(item) => void showProject(item)} onDelete={(item) => void removeProject(item)} />)}</div>}
-      </section>
+      {selectedProject && !showControl && viewMode !== "preview" && <section className="projects-pane task-detail" ref={projectsPaneRef} aria-label={t("history.aria")}>
+        <div className="pane-header"><h1>{selectedProject.name}</h1></div>
+        <ProjectRow project={selectedProject} busy={isRunning || photoBusy} previewing={openingPreviewProjectId === selectedProject.id} previewDisabled={openingPreviewProjectId !== null || closingPreviewProjectId === selectedProject.id} deleting={deletingProjectId === selectedProject.id} revealing={revealingProjectId === selectedProject.id} onPreview={(item) => void previewProject(item)} onResume={(item) => void resume(item)} onReveal={(item) => void showProject(item)} onDelete={(item) => void removeProject(item)}/>
+        {store.error && <div className="inline-error" role="alert">{messageOf(store.error)}<button onClick={() => store.setError(null)}>{t("common.close")}</button></div>}
+      </section>}
     </section>
     </div>
-
-    <aside className={showZoomControls ? "zoom-dock open" : "zoom-dock"} aria-label={t("zoom.aria")}>
-      {showZoomControls && <div className="zoom-controls">
-        <button type="button" aria-label={t("zoom.out")} disabled={uiScale <= 80} onClick={() => changeScale(-10)}><Minus size={16} /></button>
-        <button className="zoom-reset" type="button" title={t("zoom.resetTitle")} onClick={() => setUiScale(100)}>{t("zoom.reset")}</button>
-        <button type="button" aria-label={t("zoom.in")} disabled={uiScale >= 140} onClick={() => changeScale(10)}><Plus size={16} /></button>
-      </div>}
-      <button className="zoom-trigger" type="button" aria-expanded={showZoomControls} onClick={() => setShowZoomControls((visible) => !visible)}>{uiScale}%</button>
-    </aside>
+    {settingsOpen && <StudioPreferences appearance={appearance} scale={uiScale} onScale={setUiScale} onClose={() => setSettingsOpen(false)}/>}
     {showCancellationOverlay && isRunning && <div className="cancellation-backdrop" role="dialog" aria-modal="true" aria-labelledby="cancellation-title" aria-describedby="cancellation-description">
       <div className="cancellation-status" aria-live="assertive" aria-busy="true">
         <span className="cancellation-spinner" aria-hidden="true"><LoaderCircle className="spin" size={26} /></span>
@@ -917,7 +804,5 @@ export function App() {
       </div>
     </div>}
     {failureDialog && <FailureGuidanceDialog failure={failureDialog} action={failureDialogAction} onClose={closeFailureDialog} onRetry={() => void retryFailedProject()} onOpenLogs={() => void openFailureLogs()} />}
-    {telemetryPreferences && !telemetryPreferences.consentDecided && <TelemetryPreferences mode="consent" preferences={telemetryPreferences} busy={telemetryBusy} onChange={(enabled) => void changeTelemetryConsent(enabled)} />}
-    {telemetryPreferences && privacySettingsOpen && <TelemetryPreferences mode="settings" preferences={telemetryPreferences} busy={telemetryBusy} onChange={(enabled) => void changeTelemetryConsent(enabled)} onClose={() => setPrivacySettingsOpen(false)} />}
   </main>;
 }

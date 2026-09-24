@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -32,7 +33,7 @@ pub async fn train(
         tokio::fs::remove_file(&candidate).await?;
     }
     let output = manager
-        .run(ProcessSpec {
+        .run_with_terminal(ProcessSpec {
             executable: executable.to_path_buf(),
             args: vec![
                 OsString::from("--total-steps"),

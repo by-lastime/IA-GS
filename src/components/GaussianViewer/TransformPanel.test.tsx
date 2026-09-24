@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 // @vitest-environment jsdom
 
 import { act, useState } from "react";
@@ -23,7 +24,7 @@ describe("TransformPanel", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    window.localStorage.setItem("ooo-splat-language", "zh-CN");
+    window.localStorage.setItem("iags-language", "zh-CN");
   });
 
   afterEach(async () => {
@@ -54,7 +55,7 @@ describe("TransformPanel", () => {
   });
 
   it("reserves a wider label column for English scale controls", async () => {
-    window.localStorage.setItem("ooo-splat-language", "en");
+    window.localStorage.setItem("iags-language", "en");
     const transform: GaussianTransform = { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 };
     await act(async () => root.render(<LanguageProvider><TransformPanel transform={transform} onBegin={() => {}} onChange={() => {}} onCommit={() => {}} /></LanguageProvider>));
 

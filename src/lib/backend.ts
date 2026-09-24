@@ -50,7 +50,7 @@ export async function estimateProjectRuntime(projectId: string): Promise<Runtime
 export async function getProjectOverview(): Promise<ProjectOverview> { return invoke("get_project_overview"); }
 export async function getAppRuntimeStatus(): Promise<AppRuntimeStatus> { return invoke("get_app_runtime_status"); }
 export async function setProjectsRoot(projectsRoot: string): Promise<{ projectsRoot: string }> { return invoke("set_projects_root", { projectsRoot }); }
-export async function startPipeline(path: string, quality: Quality, projectsRoot: string): Promise<PipelineResult> { return invoke("start_pipeline", { path, quality, projectsRoot }); }
+export async function startPipeline(path: string, quality: Quality, projectsRoot: string, taskName: string): Promise<PipelineResult> { return invoke("start_pipeline", { path, quality, projectsRoot, taskName }); }
 export async function resumePipeline(projectId: string): Promise<PipelineResult> { return invoke("resume_pipeline", { projectId }); }
 export async function cancelPipeline(): Promise<void> { return invoke("cancel_pipeline"); }
 export async function onPipelineEvent(handler: (event: PipelineEvent) => void): Promise<UnlistenFn> { return listen<PipelineEvent>("pipeline-event", ({ payload }) => handler(payload)); }

@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 //! Streaming, non-destructive transform export for Brush Gaussian PLY files.
 //!
 //! SH rotation follows the MIT-licensed PlayCanvas splat-transform implementation.
@@ -183,7 +184,7 @@ fn engine_transform_to_ply(transform: GaussianTransform) -> (GaussianTransform, 
 
 fn unsupported(detail: impl Into<String>) -> SplatError {
     SplatError::Process(format!(
-        "第一阶段仅支持 OOOSplat/Brush binary_little_endian Gaussian PLY：{}",
+        "第一阶段仅支持 IA'GS/Brush binary_little_endian Gaussian PLY：{}",
         detail.into()
     ))
 }

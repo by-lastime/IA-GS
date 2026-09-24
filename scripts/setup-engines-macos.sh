@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
@@ -40,6 +41,10 @@ expected="$(awk 'NF { print tolower($1); exit }' "$checksum")"
 [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid release checksum file." >&2; exit 1; }
 actual="$(shasum -a 256 "$archive" | awk '{ print tolower($1) }')"
 [[ "$actual" == "$expected" ]] || { echo "macOS engine archive SHA-256 mismatch." >&2; exit 1; }
+if [[ -z "${OOOSPLAT_MACOS_ENGINE_ARCHIVE:-}" ]]; then
+  pinned="$(read_manifest distribution.archiveSha256)"
+  [[ "$actual" == "$pinned" ]] || { echo "Engine archive differs from the checksum pinned in source." >&2; exit 1; }
+fi
 
 if tar -tJf "$archive" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
   echo "Unsafe path found in macOS engine archive." >&2

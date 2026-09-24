@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 import {
   BufferTarget,
   CanvasSource,
@@ -62,7 +63,7 @@ export function drawOoosplatWatermark(
   const margin = 48;
   const logoSize = 70;
   const gap = 18;
-  const label = "OOOSplat";
+  const label = "IA'GS";
   context.save();
   context.font = '700 40px Arial, "Segoe UI", sans-serif';
   context.textBaseline = "middle";

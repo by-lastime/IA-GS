@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 // @vitest-environment jsdom
 
 import { act } from "react";
@@ -56,6 +57,10 @@ vi.mock("../lib/backend", () => ({
   startPipeline: mocks.startPipeline,
 }));
 
+vi.mock("../components/PhotoPreparation", () => ({
+  PhotoPreparation: ({onReady, onInvalidate}: {onReady:(p:string)=>Promise<void>;onInvalidate:()=>void}) => <button className="test-photo-import" onClick={async()=>{onInvalidate();const path=await mocks.selectImageSequence();if(path)await onReady(path).catch(()=>undefined);}}>导入照片</button>,
+}));
+
 vi.mock("../components/GaussianViewer", () => ({
   GaussianViewer: ({ previewSessionId, onExit, onDisposed }: { previewSessionId: number; onExit: () => void | Promise<void>; onDisposed: (projectId: string, previewSessionId: number) => void }) => <section className="preview-workspace"><h1>高斯泼溅预览</h1><button type="button" onClick={() => {
     void onExit();
@@ -99,7 +104,8 @@ describe("App preview workspace", () => {
     // jsdom does not implement scrollIntoView, and starting a run renders the live log,
     // whose auto-scroll effect then calls it.
     Element.prototype.scrollIntoView = vi.fn();
-    window.localStorage.setItem("ooo-splat-language", "zh-CN");
+    HTMLDialogElement.prototype.showModal = vi.fn();
+    window.localStorage.setItem("iags-language", "zh-CN");
     if (!window.requestAnimationFrame) {
       window.requestAnimationFrame = (callback) => window.setTimeout(() => callback(performance.now()), 0);
       window.cancelAnimationFrame = (handle) => window.clearTimeout(handle);
@@ -164,74 +170,37 @@ describe("App preview workspace", () => {
     await flush();
   });
 
+  const selectProject = async () => { await act(async () => { container.querySelector<HTMLButtonElement>(".task-nav-item:not(.draft)")?.click(); }); };
+  const nameTask = async () => { await act(async () => { const input=container.querySelector<HTMLInputElement>('#task-name')!; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,'测试任务'); input.dispatchEvent(new Event('input',{bubbles:true})); }); };
+  const switchLanguage = async () => {
+    await act(async()=>{container.querySelector<HTMLButtonElement>('.sidebar-settings')?.click();});
+    await act(async()=>{const input=container.querySelector<HTMLSelectElement>('.studio-settings select')!;input.value='en';input.dispatchEvent(new Event('change',{bubbles:true}));});
+    await act(async()=>{container.querySelector<HTMLButtonElement>('.studio-settings header button')?.click();});
+  };
+
   afterEach(async () => {
     await act(async () => { root.unmount(); });
     container.remove();
     window.localStorage.clear();
   });
 
-  it("shows the current package version and a start action without a trailing arrow", () => {
-    expect(container.querySelector(".brand-name")?.textContent).toBe("OOOSplat");
-    expect(container.querySelector(".version-tag")?.textContent).toBe("LOCAL / 0.4.1");
-    const startButton = container.querySelector(".primary-action");
-    expect(startButton?.textContent?.trim()).toBe("开始生成");
-    expect(startButton?.querySelectorAll("svg")).toHaveLength(1);
+  it("shows the wordmark without development badges and keeps generation disabled until named", async () => {
+    expect(container.querySelector(".studio-wordmark")?.textContent).toBe("IA’GS");
+    expect(container.querySelector(".version-tag")).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>(".primary-action")?.disabled).toBe(true);
+    await nameTask();
+    expect(container.querySelector<HTMLInputElement>('#task-name')?.value).toBe('测试任务');
   });
 
-  it("switches the complete task workspace to English without reloading", async () => {
-    const languageButton = container.querySelector<HTMLButtonElement>(".language-action");
-    expect(languageButton?.textContent).toContain("EN");
-    expect(languageButton?.title).toBe("中英文切换 / Switch language");
-
-    await act(async () => languageButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-
-    expect(container.textContent).toContain("01 Create New Task");
-    expect(container.textContent).toContain("02 Task History");
+  it("switches the workspace to English through settings without reloading", async () => {
+    await switchLanguage();
+    expect(container.textContent).toContain("New task");
     expect(container.textContent).toContain("Start Generation");
-    expect(container.textContent).toContain("Checking bundled engines");
-    expect(languageButton?.textContent).toContain("中文");
-    expect(languageButton?.title).toBe("中英文切换 / Switch language");
-    expect(window.localStorage.getItem("ooo-splat-language")).toBe("en");
+    expect(container.textContent).not.toContain("macOS · DEV");
+    expect(window.localStorage.getItem("iags-language")).toBe("en");
   });
 
-  it("shows automatic mask extraction when the selected video has alpha", async () => {
-    act(() => useAppStore.setState({
-      video: {
-        duration: 10,
-        width: 1920,
-        height: 1080,
-        fps: 30,
-        totalFrames: 300,
-        codec: "prores",
-        rotation: 0,
-        pixelFormat: "yuva444p10le",
-        hasAlpha: true,
-      },
-      plan: { retentionRatio: 0.5, samplingFps: 15, estimatedFrames: 150 },
-    }));
-    await flush();
-
-    expect(container.textContent).toContain("检测到 Alpha 通道");
-    expect(container.textContent).toContain("将自动提取透明画面和 COLMAP Mask");
-
-    act(() => useAppStore.setState({
-      video: {
-        duration: 10,
-        width: 1920,
-        height: 1080,
-        fps: 30,
-        totalFrames: 300,
-        codec: "h264",
-        rotation: 0,
-        pixelFormat: "yuv420p",
-        hasAlpha: false,
-      },
-    }));
-    await flush();
-    expect(container.textContent).not.toContain("将自动提取透明画面和 COLMAP Mask");
-  });
-
-  it("hides the previous live process after selecting new media but keeps new analysis notices", async () => {
+  it("hides the previous live process after selecting new media but keeps new analysis metrics", async () => {
     act(() => useAppStore.setState({
       phase: "failed",
       progress: 64,
@@ -247,7 +216,7 @@ describe("App preview workspace", () => {
         current: null, total: null, unit: null, elapsedMs: 1_000, acceleration: null,
       }],
     }));
-    mocks.selectVideo.mockResolvedValueOnce("E:\\Media\\alpha.mov");
+    mocks.selectImageSequence.mockResolvedValueOnce("E:\\Media\\alpha.mov");
     mocks.probeAndPlan.mockResolvedValueOnce({
       inputType: "video",
       video: { duration: 10, width: 1920, height: 1080, fps: 30, totalFrames: 300, codec: "prores", rotation: 0, pixelFormat: "yuva444p10le", hasAlpha: true },
@@ -257,11 +226,11 @@ describe("App preview workspace", () => {
     });
 
     expect(container.querySelector(".live-process")).not.toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>(".input-picker > .path-picker")?.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>(".test-photo-import")?.click(); });
     await flush();
 
     expect(container.querySelector(".live-process")).toBeNull();
-    expect(container.querySelector(".alpha-source-status")).not.toBeNull();
+    expect(container.querySelector(".source-metrics")).not.toBeNull();
     expect(container.textContent).not.toContain("old task output");
   });
 
@@ -273,10 +242,10 @@ describe("App preview workspace", () => {
         current: null, total: null, unit: null, elapsedMs: 1_000, acceleration: null,
       }],
     }));
-    mocks.selectVideo.mockResolvedValueOnce("E:\\Media\\broken.mov");
+    mocks.selectImageSequence.mockResolvedValueOnce("E:\\Media\\broken.mov");
     mocks.probeAndPlan.mockRejectedValueOnce(new Error("Unable to read the selected media"));
 
-    await act(async () => { container.querySelector<HTMLButtonElement>(".input-picker > .path-picker")?.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>(".test-photo-import")?.click(); });
     await flush();
 
     expect(container.querySelector(".live-process")).toBeNull();
@@ -288,6 +257,7 @@ describe("App preview workspace", () => {
     const unfinished = { ...project, status: "cancelled" as const, finalPly: null, completedAt: null };
     await act(async () => { useAppStore.setState({ projects: [unfinished] }); });
 
+    await selectProject();
     const resumeButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "继续任务");
     await act(async () => { resumeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
@@ -308,6 +278,7 @@ describe("App preview workspace", () => {
     });
     await act(async () => { useAppStore.setState({ projects: [unfinished] }); });
 
+    await selectProject();
     const resumeButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "继续任务");
     await act(async () => { resumeButton?.click(); });
     await flush();
@@ -337,6 +308,7 @@ describe("App preview workspace", () => {
       projectId: project.id,
     });
     await act(async () => { useAppStore.setState({ projects: [unfinished] }); });
+    await selectProject();
     const resumeButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "继续任务");
     await act(async () => { resumeButton?.click(); });
     await flush();
@@ -344,7 +316,7 @@ describe("App preview workspace", () => {
     const heading = container.querySelector<HTMLElement>(".failure-guidance-dialog h2")!;
     const chineseHeading = heading.textContent;
     expect(container.querySelector(".failure-guidance-dialog")?.textContent).toContain("early eof");
-    await act(async () => { container.querySelector<HTMLButtonElement>(".language-action")?.click(); });
+    await switchLanguage();
     expect(heading.textContent).not.toBe(chineseHeading);
   });
 
@@ -352,6 +324,7 @@ describe("App preview workspace", () => {
     const unfinished = { ...project, status: "cancelled" as const, finalPly: null, completedAt: null };
     mocks.resumePipeline.mockRejectedValueOnce({ code: "cancelled", message: "cancelled", projectId: project.id });
     await act(async () => { useAppStore.setState({ projects: [unfinished] }); });
+    await selectProject();
     const resumeButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "继续任务");
     await act(async () => { resumeButton?.click(); });
     await flush();
@@ -437,29 +410,31 @@ describe("App preview workspace", () => {
   });
 
   it("shows only the task panes until a completed project is opened", async () => {
-    expect(container.textContent).toContain("01 创建新任务");
-    expect(container.textContent).toContain("02 历史任务");
+    expect(container.textContent).toContain("新建任务");
+    expect(container.querySelector(".task-sidebar nav")).not.toBeNull();
     expect(container.querySelector(".preview-workspace")).toBeNull();
 
     const controlPane = container.querySelector<HTMLElement>(".control-pane");
+    await selectProject();
     const projectsPane = container.querySelector<HTMLElement>(".projects-pane");
     if (controlPane) controlPane.scrollTop = 48;
     if (projectsPane) projectsPane.scrollTop = 96;
 
+    await selectProject();
     const previewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "预览");
     await act(async () => { previewButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
 
     expect(container.querySelector(".topbar")).toBeNull();
     expect(container.textContent).toContain("高斯泼溅预览");
-    expect(container.textContent).not.toContain("01 创建新任务");
+    expect(container.querySelector<HTMLElement>(".control-pane")?.hidden).toBe(true);
 
     const backButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "返回任务");
     await act(async () => { backButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
 
-    expect(container.textContent).toContain("01 创建新任务");
-    expect(container.textContent).toContain("02 历史任务");
+    expect(container.textContent).toContain("新建任务");
+    expect(container.querySelector(".task-sidebar nav")).not.toBeNull();
     expect(container.querySelector<HTMLElement>(".control-pane")?.scrollTop).toBe(48);
     expect(container.querySelector<HTMLElement>(".projects-pane")?.scrollTop).toBe(96);
     expect(mocks.releaseGaussianPreview).toHaveBeenCalledWith(project.id);
@@ -467,12 +442,13 @@ describe("App preview workspace", () => {
 
   it("keeps the task workspace visible when preview preparation fails", async () => {
     mocks.prepareGaussianPreview.mockRejectedValueOnce(new Error("PLY 无法读取"));
+    await selectProject();
     const previewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "预览");
     await act(async () => { previewButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
 
-    expect(container.textContent).toContain("01 创建新任务");
-    expect(container.textContent).toContain("02 历史任务");
+    expect(container.textContent).toContain("新建任务");
+    expect(container.querySelector(".task-sidebar nav")).not.toBeNull();
     expect(container.textContent).toContain("PLY 无法读取");
     expect(container.querySelector(".preview-workspace")).toBeNull();
   });
@@ -480,6 +456,7 @@ describe("App preview workspace", () => {
   it("restores the task workspace before preview resource release settles", async () => {
     let finishRelease: (() => void) | undefined;
     mocks.releaseGaussianPreview.mockImplementationOnce(() => new Promise<void>((resolve) => { finishRelease = resolve; }));
+    await selectProject();
     const previewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "预览");
     await act(async () => { previewButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
@@ -488,8 +465,8 @@ describe("App preview workspace", () => {
     await act(async () => { backButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
 
-    expect(container.textContent).toContain("01 创建新任务");
-    expect(container.textContent).toContain("02 历史任务");
+    expect(container.textContent).toContain("新建任务");
+    expect(container.querySelector(".task-sidebar nav")).not.toBeNull();
     expect(container.querySelector(".preview-workspace")).toBeNull();
     expect(mocks.releaseGaussianPreview).toHaveBeenCalledWith(project.id);
 
@@ -503,6 +480,7 @@ describe("App preview workspace", () => {
     mocks.notifyPreviewDisposed.mockImplementationOnce((callback: (projectId: string, previewSessionId: number) => void, projectId: string, previewSessionId: number) => {
       finishDisposal = () => callback(projectId, previewSessionId);
     });
+    await selectProject();
     const previewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "预览");
     await act(async () => { previewButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
@@ -510,7 +488,7 @@ describe("App preview workspace", () => {
     const backButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "返回任务");
     await act(async () => { backButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
-    expect(container.textContent).toContain("01 创建新任务");
+    expect(container.textContent).toContain("新建任务");
     expect(mocks.releaseGaussianPreview).not.toHaveBeenCalled();
 
     await act(async () => { finishDisposal?.(); });
@@ -523,6 +501,7 @@ describe("App preview workspace", () => {
     mocks.notifyPreviewDisposed.mockImplementationOnce((callback: (projectId: string, previewSessionId: number) => void, projectId: string, previewSessionId: number) => {
       finishDisposal = () => callback(projectId, previewSessionId);
     });
+    await selectProject();
     const previewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "预览");
     await act(async () => { previewButton?.click(); });
     await flush();
@@ -547,6 +526,7 @@ describe("App preview workspace", () => {
 
   it("keeps the task workspace visible when preview resource release fails", async () => {
     mocks.releaseGaussianPreview.mockRejectedValueOnce(new Error("预览资源释放失败"));
+    await selectProject();
     const previewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "预览");
     await act(async () => { previewButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
@@ -555,8 +535,8 @@ describe("App preview workspace", () => {
     await act(async () => { backButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
 
-    expect(container.textContent).toContain("01 创建新任务");
-    expect(container.textContent).toContain("02 历史任务");
+    expect(container.textContent).toContain("新建任务");
+    expect(container.querySelector(".task-sidebar nav")).not.toBeNull();
     expect(container.textContent).toContain("预览资源释放失败");
     expect(container.querySelector(".preview-workspace")).toBeNull();
   });
@@ -575,7 +555,8 @@ describe("App preview workspace", () => {
     }));
 
     for (let cycle = 1; cycle <= 3; cycle += 1) {
-      const previewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "预览");
+      await selectProject();
+    const previewButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "预览");
       await act(async () => { previewButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
       await flush();
       expect(useGaussianTransformStore.getState().descriptor?.assetUrl).toContain(`previewSession=${cycle}`);
@@ -583,7 +564,7 @@ describe("App preview workspace", () => {
       const backButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "返回任务");
       await act(async () => { backButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
       await flush();
-      expect(container.textContent).toContain("01 创建新任务");
+      expect(container.textContent).toContain("新建任务");
       expect(useGaussianTransformStore.getState().descriptor).toBeNull();
     }
 
@@ -591,53 +572,14 @@ describe("App preview workspace", () => {
     expect(mocks.releaseGaussianPreview).toHaveBeenCalledTimes(3);
   });
 
-  it("selects the input type on the left before opening the matching picker", async () => {
-    mocks.selectImageSequence.mockResolvedValueOnce("E:\\Photos\\object");
-    mocks.probeAndPlan.mockResolvedValueOnce({
-      inputType: "images",
-      video: null,
-      imageSequence: {
-        imageCount: 24,
-        width: 1920,
-        height: 1080,
-        hasAlpha: true,
-        requiresLargeSequenceConfirmation: false,
-      },
-      plan: { retentionRatio: 1, samplingFps: 0, estimatedFrames: 24 },
-      estimate: {
-        estimatedMs: 120_000,
-        lowerBoundMs: 80_000,
-        upperBoundMs: 180_000,
-        confidence: "low",
-        sampleCount: 0,
-        basis: "图片序列",
-      },
-    });
-
-    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="选择输入素材类型"]');
-    const picker = container.querySelector<HTMLButtonElement>(".input-picker > .path-picker");
-    expect(toggle?.textContent).toContain("视频");
-    await act(async () => picker?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(mocks.selectVideo).toHaveBeenCalledOnce();
-
-    await act(async () => toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    const imageOption = [...container.querySelectorAll(".input-picker-menu button")].find((button) =>
-      button.textContent?.includes("图片"),
-    );
-    await act(async () => imageOption?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(mocks.selectImageSequence).not.toHaveBeenCalled();
-    expect(toggle?.textContent).toContain("图片");
-
-    await act(async () => picker?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    await flush();
-
-    expect(mocks.selectImageSequence).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain("24 张");
-    expect(container.textContent).toContain("将保留 PNG Alpha");
-    expect(container.querySelectorAll(".input-picker")).toHaveLength(1);
+  it("offers only Plus and Pro without a video picker", () => {
+    const labels=[...container.querySelectorAll('.quality-option strong')].map(e=>e.textContent);
+    expect(labels).toEqual(['Plus','Pro']);
+    expect(container.querySelector('[aria-label="选择输入素材类型"]')).toBeNull();
   });
 
   it("requires confirmation before exhaustive matching more than 500 images", async () => {
+    await nameTask();
     await act(async () => {
       useAppStore.setState({
         inputPath: "E:\\Photos\\large",
@@ -684,6 +626,7 @@ describe("App preview workspace", () => {
       useAppStore.getState().setProjects([{ ...project, registeredRatio: 0.62 }]);
     });
     await flush();
+    await selectProject();
     expect(container.querySelector(".project-quality-warning")?.textContent).toContain("62.0%");
   });
 });

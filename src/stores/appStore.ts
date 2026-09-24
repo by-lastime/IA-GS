@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 import { create } from "zustand";
 import type { ColmapAccelerationStatus, EngineStatus, FramePlan, ImageSequenceInfo, InputType, PipelineEvent, PipelineResult, ProjectSummary, Quality, RunPhase, RuntimeEstimate, VideoInfo } from "../types/pipeline";
 
@@ -37,7 +38,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   inputPath: null,
-  inputType: "video",
+  inputType: "images",
   projectsRoot: "",
   projects: [],
   quality: "balanced",

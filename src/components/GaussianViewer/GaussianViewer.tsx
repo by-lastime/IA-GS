@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 import {
   forwardRef,
   memo,
@@ -179,7 +180,7 @@ function effectRadialLimit(fullBounds: BoundingBox, effectBounds: BoundingBox) {
 }
 
 const PreviewCamera = memo(forwardRef<PcEntity>(function PreviewCamera(_props, ref) {
-  return <Entity ref={ref} name="OOOSplat Preview Camera" position={INITIAL_CAMERA_POSITION} rotation={IDENTITY_ROTATION} scale={IDENTITY_SCALE}>
+  return <Entity ref={ref} name="IA'GS Preview Camera" position={INITIAL_CAMERA_POSITION} rotation={IDENTITY_ROTATION} scale={IDENTITY_SCALE}>
     <Camera clearColor="#0e1117" fov={52} nearClip={0.01} farClip={10000} gammaCorrection={GAMMA_SRGB} toneMapping={TONEMAP_LINEAR} />
   </Entity>;
 }));
@@ -677,7 +678,7 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
     outputCanvas.width = GAUSSIAN_VIDEO_WIDTH;
     outputCanvas.height = GAUSSIAN_VIDEO_HEIGHT;
     const videoTexture = new Texture(graphicsDevice, {
-      name: "OOOSplat Portrait Video",
+      name: "IA'GS Portrait Video",
       width: GAUSSIAN_VIDEO_WIDTH,
       height: GAUSSIAN_VIDEO_HEIGHT,
       format: PIXELFORMAT_RGBA8,
@@ -688,7 +689,7 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
       addressV: ADDRESS_CLAMP_TO_EDGE,
     });
     const videoRenderTarget = new RenderTarget({
-      name: "OOOSplat Portrait Video Target",
+      name: "IA'GS Portrait Video Target",
       colorBuffer: videoTexture,
       depth: true,
       samples: 1,
@@ -846,7 +847,9 @@ const phaseLabelKeys: Record<PreviewAnimationPhase, TranslationKey> = {
   orbit: "animation.orbit",
 };
 
-export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineRunning }: {
+export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineRunning, navigationRef, onNavigationCancelled }: {
+  navigationRef?: { current: (() => boolean) | null };
+  onNavigationCancelled?: () => void;
   previewSessionId: number;
   onExit: () => void | Promise<void>;
   onDisposed: (projectId: string, previewSessionId: number) => void;
@@ -1191,6 +1194,11 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     if (hasUnsavedGaussianEdits()) setPendingNavigation(target);
     else void completeNavigation(target);
   };
+  useEffect(() => {
+    if (!navigationRef) return;
+    navigationRef.current = () => { if (busy) return false; requestNavigation("exit"); return true; };
+    return () => { navigationRef.current = null; };
+  });
   const saveAndContinue = async () => {
     if (!pendingNavigation) return;
     const target = pendingNavigation;
@@ -1338,7 +1346,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
         </div>
         <p>{mode === "adjust" ? t("viewer.adjustHint") : t("viewer.animationHint")}</p>
       </div>
-      <div className="preview-input-hints" aria-label={t("viewer.inputAria")}>
+      <details className="preview-input-help"><summary>{locale === "zh-CN" ? "操作帮助" : "Controls"}</summary><div className="preview-input-hints" aria-label={t("viewer.inputAria")}>
         <span><Orbit size={15} /><kbd>{mode === "adjust" && store.tool === "rectangle" ? t("viewer.middle") : t("viewer.left")}</kbd>{t("viewer.rotate")}</span>
         <span><Move size={15} /><kbd>{t("viewer.right")}</kbd>{t("viewer.drag")}</span>
         <span><ZoomIn size={15} /><kbd>{t("viewer.wheel")}</kbd>{t("viewer.zoom")}</span>
@@ -1349,7 +1357,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
           <span><Trash2 size={15} /><kbd>Delete / Backspace</kbd>{t("viewer.delete")}</span>
           <span><X size={15} /><kbd>Esc</kbd>{t("viewer.cancelSelection")}</span>
         </>}
-      </div>
+      </div></details>
     </header>
     <div className="preview-commandbar">
       <div className="preview-commandbar-left">
@@ -1385,7 +1393,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
         </Application>
         {mode === "preview" && <div ref={captureGuideRef} className="portrait-capture-guide" aria-hidden="true">
           <div className="portrait-frame-label"><span>1080 × 1920</span><span>30 FPS</span></div>
-          <div className="preview-watermark"><img src={appLogo} alt="" /><strong>OOOSplat</strong></div>
+          <div className="preview-watermark"><img src={appLogo} alt="" /><strong>IA'GS</strong></div>
         </div>}
         {mode === "preview" && <div className="portrait-matte" aria-hidden="true" />}
         {viewport.phase !== "ready" && viewport.phase !== "error" && <div className="viewport-overlay"><LoaderCircle className="spin" size={22} /><strong>{loadingLabel}</strong>{viewport.phase === "loading" && <span>{(viewport.progress * 100).toFixed(0)}%</span>}</div>}
@@ -1413,15 +1421,11 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
       {mode === "adjust" && store.selectedCount > 0 && <span className="selection-count"><b>{t("viewer.selected")}</b>{formatNumber(store.selectedCount)}</span>}
       {mode === "adjust" && store.editing.deletedCount > 0 && <span><b>{t("viewer.deleted")}</b>{formatNumber(store.editing.deletedCount)}</span>}
       <span><b>{t("viewer.fileSize")}</b>{formatBytes(store.descriptor.fileSize, locale)}</span>
-      {mode === "adjust"
-        ? <span><b>{t("viewer.position")}</b>{compact(store.transform.position)} <b>{t("viewer.rotation")}</b>{compact(store.transform.rotation)} <b>{t("viewer.scale")}</b>{Number(store.transform.scale.toFixed(3))}</span>
-        : <span><b>{t("viewer.timeline")}</b>{t("viewer.timelineValue")}</span>}
-      <span><b>{t("viewer.renderer")}</b>{viewport.renderer}</span>
       <span><b>{t("viewer.status")}</b>{phaseLabel}</span>
       {mode === "adjust" && <span className={`save-state ${store.saveState}`}><b>{t("viewer.project")}</b>{store.saveState === "saving" ? t("viewer.stateSaving") : store.saveState === "error" ? t("viewer.stateFailed") : store.saveState === "dirty" ? t("viewer.stateDirty") : t("viewer.stateSaved")}</span>}
-      {gaussianExportResult && mode === "adjust" && <span className="export-result" title={gaussianExportResult}><b>{t("common.saved")}</b>{gaussianExportResult.split(/[\\/]/).at(-1)}</span>}
+      {gaussianExportResult && mode === "adjust" && <span className="export-result" title={gaussianExportResult.split(/[\\/]/).at(-1)}><b>{t("common.saved")}</b>{gaussianExportResult.split(/[\\/]/).at(-1)}</span>}
       {mode === "preview" && <span><b>{t("viewer.videoEncoding")}</b>{videoCapability.checking ? t("viewer.checking") : videoCapability.supported ? t("viewer.h264Ready") : t("common.unavailable")}</span>}
-      {videoResult && mode === "preview" && <button className="statusbar-file-action" type="button" title={videoResult.path} onClick={() => void revealFile(videoResult.path)}><FolderOpen size={12} /><b>{t("viewer.exported")}</b>{videoResult.path.split(/[\\/]/).at(-1)} · {formatBytes(videoResult.fileSize, locale)}</button>}
+      {videoResult && mode === "preview" && <button className="statusbar-file-action" type="button" title={videoResult.path.split(/[\\/]/).at(-1)} onClick={() => void revealFile(videoResult.path)}><FolderOpen size={12} /><b>{t("viewer.exported")}</b>{videoResult.path.split(/[\\/]/).at(-1)} · {formatBytes(videoResult.fileSize, locale)}</button>}
     </footer>
     {store.saveError && mode === "adjust" && <div className="preview-save-error"><span>{store.saveError}</span><button type="button" onClick={retrySave}>{t("viewer.retrySave")}</button></div>}
     {mode === "preview" && !videoCapability.checking && !videoCapability.supported && <div className="preview-video-message warning">{videoCapability.reason}</div>}
@@ -1434,7 +1438,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
           <p id="gaussian-save-description">{t("viewer.saveDescription")}</p>
         </div>
         <div className="gaussian-save-actions">
-          <button type="button" className="secondary" disabled={navigationSaving} onClick={() => setPendingNavigation(null)}>{t("common.cancel")}</button>
+          <button type="button" className="secondary" disabled={navigationSaving} onClick={() => { setPendingNavigation(null); onNavigationCancelled?.(); }}>{t("common.cancel")}</button>
           <button type="button" className="secondary" disabled={navigationSaving} onClick={() => void completeNavigation(pendingNavigation)}>{t("viewer.skipSave")}</button>
           <button type="button" className="primary" disabled={navigationSaving} onClick={() => void saveAndContinue()}>{navigationSaving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{t("viewer.saveContinue")}</button>
         </div>

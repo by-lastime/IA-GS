@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -158,7 +159,7 @@ pub(crate) async fn project_is_durably_completed(root: &Path, metadata: &Project
 
 pub(crate) fn app_data_root() -> Result<PathBuf> {
     dirs::data_local_dir()
-        .map(|v| v.join("SplatStudio"))
+        .map(|v| v.join("IAGS"))
         .ok_or_else(|| SplatError::Process("无法定位本机应用数据目录".into()))
 }
 fn settings_path() -> Result<PathBuf> {
@@ -169,7 +170,7 @@ fn index_path() -> Result<PathBuf> {
 }
 pub fn default_projects_root() -> Result<PathBuf> {
     dirs::document_dir()
-        .map(|v| v.join("SplatStudio").join("Projects"))
+        .map(|v| v.join("IAGS").join("Projects"))
         .ok_or_else(|| SplatError::Process("无法定位 Documents 目录".into()))
 }
 
@@ -433,7 +434,7 @@ pub async fn delete_project(id: Uuid) -> Result<()> {
     let owned = has_project_ownership(&metadata, &item.path, id);
     if !owned {
         return Err(SplatError::Process(
-            "目录没有 OOOSplat 所有权标记，拒绝删除".into(),
+            "目录没有 IA'GS 所有权标记，拒绝删除".into(),
         ));
     }
     let mut targets = vec![item.path.clone()];

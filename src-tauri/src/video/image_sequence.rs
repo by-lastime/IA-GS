@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::{
     cmp::Ordering,
     path::{Path, PathBuf},
@@ -64,18 +65,8 @@ pub fn analyze_image_sequence(dir: &Path) -> Result<ImageSequenceInfo> {
     for path in &files {
         let image = decode_image(path)?;
         let current = image.dimensions();
-        if let Some(expected) = dimensions {
-            if expected != current {
-                return Err(SplatError::InvalidVideo(format!(
-                    "图片序列分辨率不一致：{} 为 {}×{}，预期 {}×{}",
-                    path.display(),
-                    current.0,
-                    current.1,
-                    expected.0,
-                    expected.1
-                )));
-            }
-        } else {
+        // IA'GS: different lens groups and portrait/landscape dimensions are valid.
+        if dimensions.is_none() {
             dimensions = Some(current);
         }
         has_alpha |= image_has_transparency(&image);
@@ -131,6 +122,12 @@ pub fn prepare_image_sequence(
         }
     }
 
+    if source_dir.join("camera-groups.json").is_file() {
+        std::fs::copy(
+            source_dir.join("camera-groups.json"),
+            frames_dir.join("camera-groups.json"),
+        )?;
+    }
     validate_prepared_image_sequence(frames_dir, masks_dir, info.image_count, info.has_alpha)
 }
 
@@ -278,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn detects_real_png_transparency_and_rejects_mismatched_sizes() {
+    fn detects_real_png_transparency_and_accepts_camera_group_sizes() {
         let dir = tempfile::tempdir().unwrap();
         write_rgba(&dir.path().join("1.png"), 255);
         write_rgba(&dir.path().join("2.png"), 64);
@@ -287,7 +284,7 @@ mod tests {
         assert!(info.has_alpha);
 
         RgbaImage::new(3, 2).save(dir.path().join("2.png")).unwrap();
-        assert!(analyze_image_sequence(dir.path()).is_err());
+        assert_eq!(analyze_image_sequence(dir.path()).unwrap().image_count, 2);
     }
 
     #[test]

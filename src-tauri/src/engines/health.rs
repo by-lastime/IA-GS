@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -163,22 +164,22 @@ impl EnginePaths {
             let defaults = Self::from_root(root.clone());
             Self {
                 ffmpeg: resolve_engine(
-                    "OOOSPLAT_FFMPEG",
+                    "IAGS_FFMPEG",
                     std::slice::from_ref(&defaults.ffmpeg),
                     "ffmpeg",
                 ),
                 ffprobe: resolve_engine(
-                    "OOOSPLAT_FFPROBE",
+                    "IAGS_FFPROBE",
                     std::slice::from_ref(&defaults.ffprobe),
                     "ffprobe",
                 ),
                 colmap: resolve_engine(
-                    "OOOSPLAT_COLMAP",
+                    "IAGS_COLMAP",
                     std::slice::from_ref(&defaults.colmap),
                     "colmap",
                 ),
                 brush: resolve_engine(
-                    "OOOSPLAT_BRUSH",
+                    "IAGS_BRUSH",
                     &[
                         defaults.brush.clone(),
                         root.join("linux").join("brush").join("brush_app"),
@@ -193,7 +194,7 @@ impl EnginePaths {
     }
 
     pub fn discover(resource_dir: Option<&Path>) -> Self {
-        if let Some(value) = std::env::var_os("OOOSPLAT_ENGINE_DIR") {
+        if let Some(value) = std::env::var_os("IAGS_ENGINE_DIR") {
             return Self::from_candidates(value.into());
         }
 
@@ -240,13 +241,11 @@ impl EnginePaths {
     }
 
     pub async fn check_all(&self) -> Vec<EngineStatus> {
-        let (ffmpeg, ffprobe, colmap, brush) = tokio::join!(
-            check_basic(EngineKind::Ffmpeg, &self.ffmpeg, &["-version"]),
-            check_basic(EngineKind::Ffprobe, &self.ffprobe, &["-version"]),
+        let (colmap, brush) = tokio::join!(
             check_colmap(&self.colmap, &self.root),
             check_basic(EngineKind::Brush, &self.brush, &["--help"]),
         );
-        vec![ffmpeg, ffprobe, colmap, brush]
+        vec![colmap, brush]
     }
 }
 
@@ -841,7 +840,7 @@ mod tests {
         // the resolver contract instead of requiring the binary: an explicit override
         // wins, then PATH, and otherwise the managed path is kept so engine health can
         // report the exact file it expected.
-        let expected = std::env::var_os("OOOSPLAT_FFMPEG")
+        let expected = std::env::var_os("IAGS_FFMPEG")
             .map(PathBuf::from)
             .or_else(|| find_on_path("ffmpeg"))
             .unwrap_or_else(|| PathBuf::from("/missing/engines/ffmpeg"));

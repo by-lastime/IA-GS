@@ -1,7 +1,8 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Instant,
@@ -284,12 +285,7 @@ impl PipelineRunner {
         &self,
     ) -> Result<crate::engines::ColmapAccelerationStatus> {
         let statuses = self.engines.check_all().await;
-        for required in [
-            EngineKind::Ffmpeg,
-            EngineKind::Ffprobe,
-            EngineKind::Colmap,
-            EngineKind::Brush,
-        ] {
+        for required in [EngineKind::Colmap, EngineKind::Brush] {
             let status = statuses
                 .iter()
                 .find(|status| status.kind == required)
@@ -494,6 +490,21 @@ impl PipelineRunner {
         .await
     }
 
+    pub async fn generate_named(
+        &self,
+        input: &Path,
+        quality: Quality,
+        projects_root: &Path,
+        name: &str,
+    ) -> Result<PipelineResult> {
+        self.generate_with_manager(
+            input,
+            quality,
+            ProjectManager::with_root(projects_root.to_path_buf()).with_task_name(name)?,
+        )
+        .await
+    }
+
     pub async fn generate_for_diagnostics(
         &self,
         input: &Path,
@@ -514,10 +525,11 @@ impl PipelineRunner {
         quality: Quality,
         project_manager: ProjectManager,
     ) -> Result<PipelineResult> {
+        crate::photos::validate_input(input, quality)?;
         let acceleration = self.verify_pipeline_engines().await?;
         self.events.acceleration(acceleration.clone());
         let (paths, mut metadata) = project_manager.create(input, quality).await?;
-        let state = PipelineStateFile::created_for(quality, metadata.input_type);
+        let state = project_manager.read_state(&paths.state).await?;
         self.execute_project(project_manager, paths, &mut metadata, state, &acceleration)
             .await
     }
@@ -526,6 +538,7 @@ impl PipelineRunner {
         let acceleration = self.verify_pipeline_engines().await?;
         self.events.acceleration(acceleration.clone());
         let (project, mut metadata) = catalog::load_registered_project(project_id).await?;
+        crate::photos::validate_input(&metadata.source_path, metadata.quality)?;
         if catalog::project_is_durably_completed(&project, &metadata).await {
             return Err(SplatError::Process("该项目已经完成，无需继续".into()));
         }
@@ -578,6 +591,8 @@ impl PipelineRunner {
         project_manager
             .write_metadata(&paths.metadata, metadata)
             .await?;
+        self.events
+            .stage(PipelineStage::Created, 0.0, "正在创建任务");
         let result = self
             .run_project(&project_manager, &paths, metadata, state, acceleration)
             .await;
@@ -895,9 +910,7 @@ impl PipelineRunner {
                     PipelineStage::TrainingSplats,
                     PipelineEngine::Brush,
                     Some(preset.brush_iterations as u64),
-                    ObserverMode::Brush {
-                        estimated_duration_ms: estimated_brush_duration_ms,
-                    },
+                    ObserverMode::Brush,
                 )),
             )
             .await?;
@@ -914,6 +927,9 @@ impl PipelineRunner {
         let ply = inspect_gaussian_ply(&candidate)?;
         let final_ply = paths.project.join("final.ply");
         atomic_replace_file(&candidate, &final_ply).await?;
+        let results = paths.project.join("results");
+        tokio::fs::create_dir_all(&results).await?;
+        tokio::fs::copy(&final_ply, results.join("final.ply")).await?;
         state.stage = PipelineStage::Completed;
         project_manager.write_state(&paths.state, &state).await?;
 
@@ -974,112 +990,139 @@ impl PipelineRunner {
     ) -> ProcessObserver {
         let events = self.events.clone();
         let mapper_count = Arc::new(AtomicU64::new(0));
-        let brush_progress_basis_points = Arc::new(AtomicU64::new(0));
-        Arc::new(move |update| match update {
-            ProcessUpdate::Started { process_id } => events.send(
-                stage,
-                Some(engine),
-                EventKind::Log,
-                EventLevel::Info,
-                None,
-                true,
-                format!("进程已启动 · PID {process_id}"),
-                None,
-                expected_total,
-                None,
-            ),
-            ProcessUpdate::Heartbeat { elapsed_ms } => {
-                if let ObserverMode::Brush {
-                    estimated_duration_ms,
-                } = mode
-                {
-                    let progress = estimated_brush_progress(elapsed_ms, estimated_duration_ms);
-                    brush_progress_basis_points
-                        .store((progress * 10_000.0).round() as u64, Ordering::Relaxed);
-                    events.send(
-                        stage,
-                        Some(engine),
-                        EventKind::Heartbeat,
-                        EventLevel::Info,
-                        Some(progress),
-                        false,
-                        format!(
-                            "Brush 训练中 · 估算进度 {:.0}% · 已用时 {}",
-                            progress * 100.0,
-                            format_duration(elapsed_ms)
-                        ),
-                        None,
-                        expected_total,
-                        Some("estimated_progress"),
-                    );
-                }
-            }
-            ProcessUpdate::Line { stream: _, line } => {
-                if line.is_empty() {
-                    return;
-                }
-                let parsed = match mode {
-                    ObserverMode::Ffmpeg => parse_ffmpeg_frame(&line).map(|current| {
-                        (
+        let brush_current = Arc::new(AtomicU64::new(0));
+        let brush_known = Arc::new(AtomicBool::new(false));
+        Arc::new(move |update| {
+            let brush_snapshot = || {
+                let current = brush_known
+                    .load(Ordering::Acquire)
+                    .then(|| brush_current.load(Ordering::Relaxed));
+                let progress = current
+                    .zip(expected_total.filter(|total| *total > 0))
+                    .map(|(current, total)| current as f32 / total as f32);
+                (current, progress)
+            };
+            match update {
+                ProcessUpdate::Started { process_id } => events.send(
+                    stage,
+                    Some(engine),
+                    EventKind::Log,
+                    EventLevel::Info,
+                    None,
+                    true,
+                    format!("进程已启动 · PID {process_id}"),
+                    None,
+                    expected_total,
+                    None,
+                ),
+                ProcessUpdate::Heartbeat { elapsed_ms } => {
+                    if mode == ObserverMode::Brush {
+                        let (current, progress) = brush_snapshot();
+                        let message = match progress {
+                            Some(value) if value >= 1.0 => format!(
+                                "Brush 训练 100% · 正在导出模型 · 已用时 {}",
+                                format_duration(elapsed_ms)
+                            ),
+                            Some(value) => format!(
+                                "Brush 训练 {:.1}% · 已用时 {}",
+                                value * 100.0,
+                                format_duration(elapsed_ms)
+                            ),
+                            None => {
+                                format!("Brush 正在初始化 · 已用时 {}", format_duration(elapsed_ms))
+                            }
+                        };
+                        events.send(
+                            stage,
+                            Some(engine),
+                            EventKind::Heartbeat,
+                            EventLevel::Info,
+                            progress,
+                            progress.is_none(),
+                            message,
                             current,
                             expected_total,
-                            format!("FFmpeg 已输出 {current} 帧"),
-                        )
-                    }),
-                    ObserverMode::BracketProgress => {
-                        parse_bracket_progress(&line).map(|(current, total)| {
-                            (current, Some(total), friendly_engine_line(&line))
-                        })
+                            Some("iterations"),
+                        );
                     }
-                    ObserverMode::Mapper => {
-                        parse_mapper_progress(&line, &mapper_count, expected_total)
+                }
+                ProcessUpdate::Line { stream: _, line } => {
+                    if line.is_empty() {
+                        return;
                     }
-                    ObserverMode::Brush { .. } => None,
-                };
-                if let Some((current, total, message)) = parsed {
-                    let progress = total
-                        .filter(|value| *value > 0)
-                        .map(|value| current as f32 / value as f32);
-                    events.send(
-                        stage,
-                        Some(engine),
-                        EventKind::Progress,
-                        EventLevel::Info,
-                        progress,
-                        progress.is_none(),
-                        message,
-                        Some(current),
-                        total,
-                        Some("张"),
-                    );
-                } else if matches!(mode, ObserverMode::Brush { .. }) {
-                    let progress =
-                        brush_progress_basis_points.load(Ordering::Relaxed) as f32 / 10_000.0;
-                    events.send(
-                        stage,
-                        Some(engine),
-                        EventKind::Log,
-                        EventLevel::Info,
-                        Some(progress),
-                        progress == 0.0,
-                        friendly_engine_line(&line),
-                        None,
-                        expected_total,
-                        Some("estimated_progress"),
-                    );
-                } else if is_useful_line(&line) {
-                    events.send(
-                        stage,
-                        Some(engine),
-                        EventKind::Log,
-                        EventLevel::Info,
-                        None,
-                        true,
-                        friendly_engine_line(&line),
-                        None,
-                        expected_total,
-                        None,
-                    );
+                    let parsed = match mode {
+                        ObserverMode::Ffmpeg => parse_ffmpeg_frame(&line).map(|current| {
+                            (
+                                current,
+                                expected_total,
+                                format!("FFmpeg 已输出 {current} 帧"),
+                            )
+                        }),
+                        ObserverMode::BracketProgress => {
+                            parse_bracket_progress(&line).map(|(current, total)| {
+                                (current, Some(total), friendly_engine_line(&line))
+                            })
+                        }
+                        ObserverMode::Mapper => {
+                            parse_mapper_progress(&line, &mapper_count, expected_total)
+                        }
+                        ObserverMode::Brush => parse_brush_progress(&line)
+                            .filter(|(_, total)| Some(*total) == expected_total)
+                            .and_then(|(current, total)| {
+                                let previous = brush_current.fetch_max(current, Ordering::Relaxed);
+                                let known = brush_known.swap(true, Ordering::Release);
+                                if known && current <= previous {
+                                    return None;
+                                }
+                                Some((
+                                    current,
+                                    Some(total),
+                                    format!(
+                                        "Brush 训练 {:.1}%",
+                                        current as f64 * 100.0 / total as f64
+                                    ),
+                                ))
+                            }),
+                    };
+                    if let Some((current, total, message)) = parsed {
+                        let progress = total
+                            .filter(|value| *value > 0)
+                            .map(|value| current as f32 / value as f32);
+                        events.send(
+                            stage,
+                            Some(engine),
+                            EventKind::Progress,
+                            EventLevel::Info,
+                            progress,
+                            progress.is_none(),
+                            message,
+                            Some(current),
+                            total,
+                            Some(if mode == ObserverMode::Brush {
+                                "iterations"
+                            } else {
+                                "张"
+                            }),
+                        );
+                    } else if is_useful_line(&line) {
+                        let (current, progress) = if mode == ObserverMode::Brush {
+                            brush_snapshot()
+                        } else {
+                            (None, None)
+                        };
+                        events.send(
+                            stage,
+                            Some(engine),
+                            EventKind::Log,
+                            EventLevel::Info,
+                            progress,
+                            progress.is_none(),
+                            friendly_engine_line(&line),
+                            current,
+                            expected_total,
+                            None,
+                        );
+                    }
                 }
             }
         })
@@ -1091,16 +1134,17 @@ enum ObserverMode {
     Ffmpeg,
     BracketProgress,
     Mapper,
-    Brush { estimated_duration_ms: u64 },
+    Brush,
 }
 
-fn estimated_brush_progress(elapsed_ms: u64, estimated_duration_ms: u64) -> f32 {
-    const MAX_PROGRESS_BEFORE_COMPLETION: f64 = 0.95;
-    if estimated_duration_ms == 0 {
-        return 0.0;
-    }
-    ((elapsed_ms as f64 / estimated_duration_ms as f64) * MAX_PROGRESS_BEFORE_COMPLETION)
-        .clamp(0.0, MAX_PROGRESS_BEFORE_COMPLETION) as f32
+/// Official Brush 0.3 indicatif output: "[00:02] …  123/   8000 Steps (…)".
+/// Match the Steps counter only, never elapsed time or image-loading counters.
+fn parse_brush_progress(line: &str) -> Option<(u64, u64)> {
+    let before = line.split_once(" Steps")?.0;
+    let (left, right) = before.rsplit_once('/')?;
+    let current = left.split_whitespace().last()?.parse::<u64>().ok()?;
+    let total = right.trim().parse::<u64>().ok()?;
+    (total > 0 && current <= total).then_some((current, total))
 }
 
 fn parse_ffmpeg_frame(line: &str) -> Option<u64> {
@@ -1785,16 +1829,71 @@ mod tests {
     }
 
     #[test]
-    fn brush_estimated_progress_advances_and_stops_at_ninety_five_percent() {
-        assert_eq!(estimated_brush_progress(0, 100_000), 0.0);
-        assert!((estimated_brush_progress(50_000, 100_000) - 0.475).abs() < f32::EPSILON);
-        assert!((estimated_brush_progress(100_000, 100_000) - 0.95).abs() < f32::EPSILON);
-        assert!((estimated_brush_progress(500_000, 100_000) - 0.95).abs() < f32::EPSILON);
+    fn brush_progress_reads_only_real_training_counters() {
+        assert_eq!(
+            parse_brush_progress("[00:03] ◍○○ 120/   8000 Steps (40/s, 3m remaining)"),
+            Some((120, 8000))
+        );
+        assert_eq!(
+            parse_brush_progress("[00:03] ◍◍◍ 15000/ 15000 Steps"),
+            Some((15000, 15000))
+        );
+        assert_eq!(
+            parse_brush_progress("[00:00] ○○○ 0/ 8000 Steps"),
+            Some((0, 8000))
+        );
+        for line in [
+            "10/12 Images",
+            "3/0 Steps",
+            "9000/8000 Steps",
+            "Brush elapsed 120s",
+            "NaN/8000 Steps",
+        ] {
+            assert_eq!(parse_brush_progress(line), None);
+        }
     }
 
     #[test]
-    fn brush_estimated_progress_handles_an_invalid_duration() {
-        assert_eq!(estimated_brush_progress(10_000, 0), 0.0);
+    fn brush_heartbeat_and_logs_preserve_measured_progress() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let runner = PipelineRunner::new(EnginePaths::from_root("unused"), move |event| {
+            captured.lock().unwrap().push(event)
+        });
+        let observer = runner.process_observer(
+            PipelineStage::TrainingSplats,
+            PipelineEngine::Brush,
+            Some(8000),
+            ObserverMode::Brush,
+        );
+        observer(ProcessUpdate::Heartbeat { elapsed_ms: 1000 });
+        observer(ProcessUpdate::Line {
+            stream: crate::process::ProcessStream::Stderr,
+            line: "[1s] ◍○ 4000/8000     Steps (40/s)".into(),
+        });
+        observer(ProcessUpdate::Heartbeat { elapsed_ms: 2000 });
+        observer(ProcessUpdate::Line {
+            stream: crate::process::ProcessStream::Stderr,
+            line: "warning: diagnostic".into(),
+        });
+        // An unrelated or stale counter must not move the training percentage.
+        observer(ProcessUpdate::Line {
+            stream: crate::process::ProcessStream::Stderr,
+            line: "2000/8000 Steps".into(),
+        });
+        observer(ProcessUpdate::Line {
+            stream: crate::process::ProcessStream::Stderr,
+            line: "12/12 Steps".into(),
+        });
+        observer(ProcessUpdate::Heartbeat { elapsed_ms: 3000 });
+        let events = events.lock().unwrap();
+        assert!(events[0].indeterminate);
+        assert_eq!(events.len(), 5);
+        for event in &events[1..] {
+            assert!(!event.indeterminate);
+            assert_eq!(event.stage_progress, Some(50.0));
+            assert_eq!(event.current, Some(4000));
+        }
     }
 
     #[test]

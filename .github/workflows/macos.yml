@@ -1,115 +1,27 @@
-name: macOS 15+ Apple Silicon Alpha
-
+# Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
+name: macOS source checks
 on:
   push:
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  group: macos-alpha-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  test-and-build:
+  test:
+    timeout-minutes: 30
     runs-on: macos-15
-    timeout-minutes: 360
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "15.0"
-      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
-
     steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-
-      - name: Read package version
-        id: package
-        run: |
-          version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Rust
-        run: |
-          rustup update stable --no-self-update
-          rustup default stable
-          rustup component add rustfmt clippy
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Frontend and license checks
-        run: |
-          npm run verify:telemetry:release
-          npm test
-          npm run build
-          npm run verify:licenses
-
-      - name: Restore macOS build caches
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/Library/Caches/Homebrew
-            .cache/ccache
-            .cache/macos-engine-build/sources
-          key: macos-15-arm64-engines-${{ hashFiles('engines/manifest.macos.json', 'scripts/setup-macos-build-deps.sh', 'scripts/build-engines-macos.sh') }}
-          save-always: true
-
-      - name: Install engine build prerequisites
-        run: bash scripts/setup-macos-build-deps.sh
-
-      - name: Build and verify bundled arm64 engines
-        run: npm run build:engines:macos
-
-      - name: Rust formatting, tests, and clippy
-        run: |
-          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-          cargo test --manifest-path src-tauri/Cargo.toml
-          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-
-      - name: Build unsigned app and DMG
-        env:
-          APPLE_SIGNING_IDENTITY: "-"
-        run: npm run tauri -- build --bundles app,dmg
-
-      - name: Verify packaged engine resources
-        run: |
-          app="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          dmg="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
-          test -n "$app"
-          test -n "$dmg"
-          plist="$app/Contents/Info.plist"
-          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
-          test -x "$app/Contents/MacOS/$executable"
-          for engine in ffmpeg ffprobe colmap brush_app; do
-            test -x "$app/Contents/Resources/engines/macos/arm64/bin/$engine"
-            file "$app/Contents/Resources/engines/macos/arm64/bin/$engine" | grep -q arm64
-          done
-          hdiutil verify "$dmg"
-
-      - name: Package downloadable files
-        run: |
-          app="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          dmg="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
-          version="${{ steps.package.outputs.version }}"
-          app_archive="OOOSplat-${version}-arm64-macos.app.zip"
-          dmg_name="OOOSplat-${version}-arm64-macos.dmg"
-          mkdir -p dist-artifacts
-          ditto -c -k --sequesterRsrc --keepParent "$app" "dist-artifacts/$app_archive"
-          cp "$dmg" "dist-artifacts/$dmg_name"
-          (cd dist-artifacts && shasum -a 256 "$app_archive" "$dmg_name" > SHA256SUMS.txt)
-
-      - name: Upload unsigned macOS Alpha
-        uses: actions/upload-artifact@v7
-        with:
-          name: OOOSplat-${{ steps.package.outputs.version }}-arm64-macos
-          path: dist-artifacts/
-          if-no-files-found: error
-          retention-days: 14
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm run build:helper
+      - run: npm run verify:licenses
+      - run: npm test
+      - run: npm run build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+# Source checks only. Binary releases are reviewed and published separately.

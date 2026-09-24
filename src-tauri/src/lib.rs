@@ -1,6 +1,8 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 pub mod commands;
 pub mod engines;
 pub mod error;
+pub mod photos;
 pub mod pipeline;
 pub mod presets;
 pub mod process;
@@ -13,10 +15,16 @@ pub fn run_app() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(photos::PhotoController::default())
         .manage(commands::PipelineController::default())
         .manage(commands::PreviewController::default())
         .manage(telemetry::TelemetryService::new())
         .invoke_handler(tauri::generate_handler![
+            photos::prepare_photos,
+            photos::open_preparation,
+            photos::edit_photo,
+            photos::finalize_photos,
+            photos::cancel_preparation,
             commands::check_engines,
             commands::check_colmap_acceleration,
             commands::probe_and_plan,
@@ -44,5 +52,5 @@ pub fn run_app() {
             commands::set_telemetry_consent,
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run OOOSplat");
+        .expect("failed to run IA'GS");
 }

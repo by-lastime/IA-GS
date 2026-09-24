@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
@@ -15,11 +16,11 @@ runtime="$workspace/engines/macos/arm64"
 manifest="$workspace/engines/manifest.macos.json"
 minimum_system_version="$(node -e 'process.stdout.write(require(process.argv[1]).minimumSystemVersion)' "$manifest")"
 
-for relative in bin/ffmpeg bin/ffprobe bin/colmap bin/brush_app SHA256SUMS BUILD-INFO.json BUNDLED-COMPONENTS.json; do
+for relative in bin/colmap bin/brush_app SHA256SUMS BUILD-INFO.json BUNDLED-COMPONENTS.json; do
   [[ -f "$runtime/$relative" ]] || { echo "Missing macOS runtime file: $relative" >&2; exit 1; }
 done
 
-for binary in ffmpeg ffprobe colmap brush_app; do
+for binary in colmap brush_app; do
   [[ -x "$runtime/bin/$binary" ]] || { echo "$binary is not executable." >&2; exit 1; }
 done
 
@@ -71,8 +72,6 @@ for target in "$runtime/bin"/* "$runtime/lib"/*; do
 done
 
 restricted_path="/usr/bin:/bin:/usr/sbin:/sbin"
-PATH="$restricted_path" "$runtime/bin/ffmpeg" -version | grep -F 'ffmpeg version 8.1.2'
-PATH="$restricted_path" "$runtime/bin/ffprobe" -version | grep -F 'ffprobe version 8.1.2'
 
 feature_help="$(PATH="$restricted_path" "$runtime/bin/colmap" feature_extractor -h 2>&1)"
 matching_help="$(PATH="$restricted_path" "$runtime/bin/colmap" sequential_matcher -h 2>&1)"
@@ -105,4 +104,4 @@ for (const file of fs.readdirSync(path.join(process.argv[4],"lib"))) if (!covere
 for (const license of c.sourceLicenseFiles||[]) if (!fs.existsSync(path.join(process.argv[4],"licenses",license))) throw new Error(`Missing source license ${license}`);
 if ((c.sourceLicenseFiles||[]).length < 6) throw new Error("Incomplete COLMAP source license inventory");
 ' "$manifest" "$runtime/BUILD-INFO.json" "$runtime/BUNDLED-COMPONENTS.json" "$runtime"
-echo "Verified bundled Apple Silicon FFmpeg/FFprobe, CPU COLMAP, and Brush without PATH fallback."
+echo "Verified bundled Apple Silicon COLMAP, Brush and runtime license inventory without PATH fallback."

@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 // @vitest-environment jsdom
 
 import { act } from "react";
@@ -85,7 +86,7 @@ describe("App live log", () => {
 
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    window.localStorage.setItem("ooo-splat-language", "zh-CN");
+    window.localStorage.setItem("iags-language", "zh-CN");
     useAppStore.setState({
       inputPath: null, inputType: "video", projectsRoot: "E:\\Projects", projects: [], quality: "balanced", colmapAcceleration: null,
       video: null, imageSequence: null, plan: null, estimate: null, engines: [], phase: "running", progress: 0, progressMessage: "",
@@ -132,6 +133,13 @@ describe("App live log", () => {
   it("shows only the current stage and total elapsed metrics", () => {
     const labels = Array.from(container.querySelectorAll(".process-metrics small"), (node) => node.textContent);
     expect(labels).toEqual(["当前阶段", "总耗时"]);
+  });
+
+  it("keeps the measured Splat percentage visible on heartbeat updates", async () => {
+    await act(async () => { useAppStore.getState().receiveEvent({ ...event(1), stageProgress: 37.5, progress: 55, message: "Brush 训练 37.5%" }); });
+    expect(container.querySelector(".stage-timeline .active small")?.textContent).toBe("38%");
+    await act(async () => { useAppStore.getState().receiveEvent({ ...event(2), kind: "heartbeat", stageProgress: 37.5, progress: 55, message: "Brush 训练 37.5% · 已用时 00:02:00" }); });
+    expect(container.querySelector(".stage-timeline .active small")?.textContent).toBe("38%");
   });
 
   it("keeps the outer task pane fixed while following fewer than 500 log lines", async () => {
@@ -193,7 +201,9 @@ describe("App live log", () => {
 
     expect(container.querySelector(".current-message")?.textContent).toBe("Retriangulation and Global bundle adjustment · 已注册 86/100");
 
-    await act(async () => { container.querySelector<HTMLButtonElement>(".language-action")!.click(); });
+    HTMLDialogElement.prototype.showModal = vi.fn();
+    await act(async () => { container.querySelector<HTMLButtonElement>(".sidebar-settings")!.click(); });
+    await act(async () => { const input=container.querySelector<HTMLSelectElement>('.studio-settings select')!;input.value='en';input.dispatchEvent(new Event('change',{bubbles:true})); });
     expect(container.querySelector(".current-message")?.textContent).toBe("Retriangulation and Global bundle adjustment · Registered 86/100");
   });
 

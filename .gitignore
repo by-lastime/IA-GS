@@ -27,3 +27,23 @@ engines/linux/brush/**
 !engines/linux/brush/README.md
 engines/macos/arm64/**
 !engines/macos/arm64/README.md
+
+/releases/
+validation/
+.test-data/
+.native-cache/
+
+# Local agent configuration, credentials and generated reconstructions.
+.codex/
+.agents/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.p8
+*.ply
+*.splat
+*.ksplat
+*.spz

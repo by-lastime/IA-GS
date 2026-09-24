@@ -8,3 +8,15 @@ licenses/THIRD_PARTY_NOTICES.txt for attribution and license information.
 
 The Apache License does not grant permission to use the OOOSplat name, logo,
 icons, or other brand features as trademarks. See TRADEMARK_POLICY.md.
+
+IA'GS modifications
+Copyright 2026 IA'GS contributors
+
+IA'GS is an independently maintained derivative of OOOSplat 0.4.1,
+upstream commit 037005dcd5a03b1579d0b363f8046785325f95f5.
+https://github.com/ooolabdev/ooosplat
+This project is not an official OOOSplat release and is not endorsed by ooolabdev.
+Modifications include native photo preparation and mask review, camera grouping,
+macOS-only photo input, Plus/Pro workflows, isolated storage, and disabled telemetry.
+Apple Vision is supplied by macOS; its system models are not distributed in this repository.
+See docs/CHANGES_FROM_UPSTREAM.md for modified components.

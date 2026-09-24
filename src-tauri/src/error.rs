@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
@@ -6,7 +7,7 @@ pub enum SplatError {
     EngineMissing(String),
     #[error("本地处理引擎无法启动：{engine}（{detail}）")]
     EngineStart { engine: String, detail: String },
-    #[error("视频无效：{0}")]
+    #[error("素材无效：{0}")]
     InvalidVideo(String),
     #[error("不支持的文件路径：{0}")]
     InvalidPath(PathBuf),

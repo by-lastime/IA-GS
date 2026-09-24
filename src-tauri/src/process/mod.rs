@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::{
     ffi::OsString,
     path::PathBuf,
@@ -12,7 +13,7 @@ use std::{
 use tokio::{
     fs,
     fs::OpenOptions,
-    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
     sync::Mutex,
 };
@@ -233,6 +234,16 @@ impl ProcessManager {
     }
 
     pub async fn run(&self, spec: ProcessSpec) -> Result<ProcessOutput> {
+        self.run_inner(spec, false).await
+    }
+
+    /// Brush/indicatif only emits iteration progress to a terminal. Give stderr
+    /// a PTY while keeping the direct child in our cancellable process group.
+    pub async fn run_with_terminal(&self, spec: ProcessSpec) -> Result<ProcessOutput> {
+        self.run_inner(spec, true).await
+    }
+
+    async fn run_inner(&self, spec: ProcessSpec, terminal: bool) -> Result<ProcessOutput> {
         if !spec.executable.is_file() {
             return Err(SplatError::EngineMissing(
                 spec.executable.display().to_string(),
@@ -250,6 +261,16 @@ impl ProcessManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        let terminal_reader = if terminal {
+            let (reader, writer) = open_progress_terminal()?;
+            command
+                .stderr(Stdio::from(writer))
+                .env("TERM", "xterm-256color");
+            Some(tokio::fs::File::from_std(reader))
+        } else {
+            None
+        };
         if let Some(directory) = &spec.working_directory {
             command.current_dir(directory);
         }
@@ -271,6 +292,9 @@ impl ProcessManager {
             engine: spec.executable.display().to_string(),
             detail: error.to_string(),
         })?;
+        // Command retains its Stdio handle after spawn; closing the parent's
+        // PTY slave is essential for the master to reach EOF when Brush exits.
+        drop(command);
         let process_id = child
             .id()
             .ok_or_else(|| SplatError::Process("无法读取子进程 ID".into()))?;
@@ -331,11 +355,22 @@ impl ProcessManager {
             spec.observer.clone(),
             log_file.clone(),
         ));
-        let stderr_task = tokio::spawn(pump_stream(
-            child.stderr.take().expect("stderr is piped"),
+        let stderr_reader: Box<dyn AsyncRead + Unpin + Send> = {
+            #[cfg(unix)]
+            if let Some(reader) = terminal_reader {
+                Box::new(reader)
+            } else {
+                Box::new(child.stderr.take().expect("stderr is piped"))
+            }
+            #[cfg(not(unix))]
+            Box::new(child.stderr.take().expect("stderr is piped"))
+        };
+        let stderr_task = tokio::spawn(pump_stream_inner(
+            stderr_reader,
             ProcessStream::Stderr,
             spec.observer.clone(),
             log_file.clone(),
+            terminal,
         ));
         let finished = Arc::new(AtomicBool::new(false));
         let heartbeat_task = spec.observer.clone().map(|observer| {
@@ -428,24 +463,114 @@ async fn pump_stream<R: AsyncRead + Unpin>(
     observer: Option<ProcessObserver>,
     log: Option<Arc<Mutex<tokio::fs::File>>>,
 ) -> std::io::Result<Vec<u8>> {
-    let mut reader = BufReader::new(reader);
+    pump_stream_inner(reader, stream, observer, log, false).await
+}
+
+#[cfg(unix)]
+fn open_progress_terminal() -> std::io::Result<(std::fs::File, std::fs::File)> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let (mut master, mut slave) = (-1, -1);
+    let mut size = libc::winsize {
+        ws_row: 30,
+        ws_col: 180,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: valid output pointers and window size; no termios or name buffer.
+    if unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: openpty returned two distinct owned descriptors. File closes each once.
+    let pair = unsafe {
+        (
+            std::fs::File::from_raw_fd(master),
+            std::fs::File::from_raw_fd(slave),
+        )
+    };
+    for file in [&pair.0, &pair.1] {
+        // Prevent inherited master/slave copies from keeping the terminal alive.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(pair)
+}
+
+fn clean_terminal_line(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut chars = text.chars();
+    let mut clean = String::new();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if chars.next() == Some('[') {
+                for code in chars.by_ref() {
+                    if ('@'..='~').contains(&code) {
+                        break;
+                    }
+                }
+            }
+        } else if !ch.is_control() || ch == '\t' {
+            clean.push(ch);
+        }
+    }
+    clean.trim().to_owned()
+}
+
+async fn pump_stream_inner<R: AsyncRead + Unpin>(
+    mut reader: R,
+    stream: ProcessStream,
+    observer: Option<ProcessObserver>,
+    log: Option<Arc<Mutex<tokio::fs::File>>>,
+    terminal: bool,
+) -> std::io::Result<Vec<u8>> {
     let mut collected = Vec::new();
     let mut line = Vec::new();
+    let mut buffer = [0u8; 8192];
     loop {
-        line.clear();
-        let read = reader.read_until(b'\n', &mut line).await?;
+        let read = match reader.read(&mut buffer).await {
+            Ok(read) => read,
+            // Some Unix PTYs signal slave closure with EIO instead of EOF.
+            #[cfg(unix)]
+            Err(error) if terminal && error.raw_os_error() == Some(libc::EIO) => 0,
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             break;
         }
-        collected.extend_from_slice(&line);
-        if let Some(file) = &log {
-            file.lock().await.write_all(&line).await?;
+        collected.extend_from_slice(&buffer[..read]);
+        if collected.len() > 4 * 1024 * 1024 {
+            collected.drain(..collected.len() - 4 * 1024 * 1024);
         }
-        if let Some(observer) = &observer {
-            observer(ProcessUpdate::Line {
-                stream,
-                line: String::from_utf8_lossy(&line).trim().to_string(),
-            });
+        if let Some(file) = &log {
+            file.lock().await.write_all(&buffer[..read]).await?;
+        }
+        for &byte in &buffer[..read] {
+            if byte == b'\n' || byte == b'\r' {
+                if let Some(observer) = &observer {
+                    let text = clean_terminal_line(&line);
+                    if !text.is_empty() {
+                        observer(ProcessUpdate::Line { stream, line: text });
+                    }
+                }
+                line.clear();
+            } else {
+                line.push(byte);
+            }
+        }
+    }
+    if let Some(observer) = &observer {
+        let text = clean_terminal_line(&line);
+        if !text.is_empty() {
+            observer(ProcessUpdate::Line { stream, line: text });
         }
     }
     Ok(collected)
@@ -468,6 +593,39 @@ mod tests {
         assert!(detail.ends_with("early eof"));
         assert_eq!(detail.chars().count(), 4_096);
         assert!(!detail.contains("less useful stdout"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_streams_live_carriage_returns_and_preserves_exit_status() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let observer: ProcessObserver = Arc::new(move |update| {
+            if let ProcessUpdate::Line { line, .. } = update {
+                let _ = tx.send(line);
+            }
+        });
+        let run = tokio::spawn(async move {
+            ProcessManager::new().run_with_terminal(ProcessSpec {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), r"test -t 2 || exit 9; printf '\033[2K12/100 Steps\r' >&2; sleep 1; printf '\033[2K100/100 Steps\r' >&2; exit 7".into()],
+                working_directory: None, log_path: None, observer: Some(observer),
+            }).await.unwrap()
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            "12/100 Steps"
+        );
+        assert!(!run.is_finished(), "progress must arrive before child exit");
+        let output = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!output.success);
+        assert_eq!(output.exit_code, Some(7));
+        assert_eq!(rx.recv().await.unwrap(), "100/100 Steps");
     }
 
     #[cfg(windows)]
@@ -616,53 +774,58 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_terminates_descendant_processes() {
-        let descendant_pid = Arc::new(std::sync::Mutex::new(None::<u32>));
-        let observer: ProcessObserver = {
-            let descendant_pid = descendant_pid.clone();
-            Arc::new(move |update| {
-                if let ProcessUpdate::Line { line, .. } = update {
-                    if let Ok(pid) = line.parse() {
-                        *descendant_pid.lock().unwrap() = Some(pid);
+        for terminal in [false, true] {
+            let descendant_pid = Arc::new(std::sync::Mutex::new(None::<u32>));
+            let observer: ProcessObserver = {
+                let descendant_pid = descendant_pid.clone();
+                Arc::new(move |update| {
+                    if let ProcessUpdate::Line { line, .. } = update {
+                        if let Ok(pid) = line.parse() {
+                            *descendant_pid.lock().unwrap() = Some(pid);
+                        }
                     }
-                }
-            })
-        };
-        let manager = ProcessManager::new();
-        let running_manager = manager.clone();
-        let run = tokio::spawn(async move {
-            running_manager
-                .run(ProcessSpec {
-                    executable: PathBuf::from("/bin/sh"),
-                    args: vec!["-c".into(), "sleep 30 & echo $!; wait".into()],
-                    working_directory: None,
-                    log_path: None,
-                    observer: Some(observer),
                 })
-                .await
-        });
+            };
+            let manager = ProcessManager::new();
+            let running_manager = manager.clone();
+            let run = tokio::spawn(async move {
+                running_manager
+                    .run_inner(
+                        ProcessSpec {
+                            executable: PathBuf::from("/bin/sh"),
+                            args: vec!["-c".into(), "sleep 30 & echo $!; wait".into()],
+                            working_directory: None,
+                            log_path: None,
+                            observer: Some(observer),
+                        },
+                        terminal,
+                    )
+                    .await
+            });
 
-        for _ in 0..50 {
-            if descendant_pid.lock().unwrap().is_some() {
-                break;
+            for _ in 0..50 {
+                if descendant_pid.lock().unwrap().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let pid = descendant_pid.lock().unwrap().expect("descendant PID");
-        manager.cancel();
-        assert!(matches!(run.await.unwrap(), Err(SplatError::Cancelled)));
+            let pid = descendant_pid.lock().unwrap().expect("descendant PID");
+            manager.cancel();
+            assert!(matches!(run.await.unwrap(), Err(SplatError::Cancelled)));
 
-        let mut terminated = false;
-        for _ in 0..150 {
-            if descendant_is_terminated(pid) {
-                terminated = true;
-                break;
+            let mut terminated = false;
+            for _ in 0..150 {
+                if descendant_is_terminated(pid) {
+                    terminated = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(
+                terminated,
+                "descendant {pid} was still running after cancellation"
+            );
         }
-        assert!(
-            terminated,
-            "descendant {pid} was still running after cancellation"
-        );
     }
 
     /// A killed descendant is reparented to PID 1, and PID 1 does not reap in every

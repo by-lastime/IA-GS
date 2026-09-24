@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 import { describe, expect, it } from "vitest";
 import {
   EXPORT_ORBIT_DURATION_SECONDS,
@@ -64,7 +65,7 @@ describe("PreviewAnimation", () => {
     expect(colorModifier).not.toContain("originalAlpha * 0.22");
   });
 
-  it("uses the OOOSplat theme blue for the shockwave transition", () => {
+  it("uses the IA'GS theme blue for the shockwave transition", () => {
     expect(PREVIEW_ANIMATION_GLSL).toContain("vec3(0.117647, 0.360784, 1.0)");
     expect(PREVIEW_ANIMATION_GLSL).not.toContain("vec3(1.0, 0.68, 0.24)");
   });

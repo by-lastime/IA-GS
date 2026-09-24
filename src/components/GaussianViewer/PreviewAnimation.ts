@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 export const REVEAL_DURATION_SECONDS = 5;
 export const SHOCKWAVE_DURATION_SECONDS = 8;
 export const ORBIT_START_SECONDS = REVEAL_DURATION_SECONDS + SHOCKWAVE_DURATION_SECONDS;
@@ -203,7 +204,7 @@ void modifySplatColor(vec3 center, inout vec4 color) {
     float strength = band * smoothstep(0.0, 0.03, progress);
     float stagedAlpha = originalAlpha * ooosplatReveal(center);
     color.a = mix(stagedAlpha, originalAlpha, refreshed);
-    // OOOSplat theme blue (#1e5cff), normalized for the shader color space.
+    // IA'GS theme blue (#1e5cff), normalized for the shader color space.
     color.rgb = mix(color.rgb, vec3(0.117647, 0.360784, 1.0), strength * 0.62);
 }
 `;

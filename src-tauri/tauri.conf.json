@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OOOSplat",
-  "version": "0.4.1",
-  "identifier": "studio.ooo.splat",
+  "productName": "IA'GS",
+  "version": "0.1.0",
+  "identifier": "app.iags.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,14 +12,14 @@
   "app": {
     "windows": [
       {
-        "title": "OOOSplat",
+        "title": "IA'GS",
         "width": 1500,
         "height": 850,
         "minWidth": 1100,
         "minHeight": 680,
         "resizable": true,
         "fullscreen": false,
-        "backgroundColor": "#eef1f5"
+        "backgroundColor": "#070d18"
       }
     ],
     "security": {
@@ -32,7 +32,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -47,7 +50,6 @@
       "../licenses/THIRD_PARTY_NOTICES.txt": "licenses/THIRD_PARTY_NOTICES.txt",
       "../licenses/FFmpeg-LGPL-2.1.txt": "licenses/FFmpeg-LGPL-2.1.txt",
       "../licenses/COLMAP-LICENSE.txt": "licenses/COLMAP-LICENSE.txt",
-      "../licenses/NVIDIA-CUDA-Runtime.txt": "licenses/NVIDIA-CUDA-Runtime.txt",
       "../licenses/Brush-LICENSE.txt": "licenses/Brush-LICENSE.txt",
       "../licenses/PlayCanvas-MIT.txt": "licenses/PlayCanvas-MIT.txt",
       "../licenses/Mediabunny-MPL-2.0.txt": "licenses/Mediabunny-MPL-2.0.txt",
@@ -55,13 +57,6 @@
       "../NOTICE": "NOTICE",
       "../TRADEMARK_POLICY.md": "TRADEMARK_POLICY.md",
       "../GENERATED_OUTPUTS.md": "GENERATED_OUTPUTS.md"
-    },
-    "windows": {
-      "nsis": {
-        "installerIcon": "icons/icon.ico",
-        "installMode": "perMachine",
-        "compression": "bzip2"
-      }
     }
   }
 }

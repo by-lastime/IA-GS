@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -10,7 +11,7 @@ use crate::{
     video::{FramePlan, ImageSequenceInfo, VideoInfo},
 };
 
-pub const PROJECT_APP_ID: &str = "studio.ooo.splat";
+pub const PROJECT_APP_ID: &str = "app.iags.desktop";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -315,7 +316,7 @@ mod tests {
     #[test]
     fn schema_two_metadata_defaults_to_identity_transform() {
         let json = r#"{
-          "schemaVersion":2,"appId":"studio.ooo.splat","id":"00000000-0000-0000-0000-000000000001",
+          "schemaVersion":2,"appId":"app.iags.desktop","id":"00000000-0000-0000-0000-000000000001",
           "name":"legacy","createdAt":"2026-01-01T00:00:00Z","sourcePath":"input.mp4","quality":"balanced",
           "projectPath":"C:/legacy"
         }"#;

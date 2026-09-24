@@ -1,4 +1,5 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
+use std::{path::PathBuf, sync::Arc};
 
 use chrono::{Local, NaiveDate};
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,8 @@ use super::event::{validate_privacy, TelemetryEvent, TelemetryPayload};
 
 /// The production endpoint is compiled from `config/telemetry-endpoint.txt` by `build.rs`.
 /// Invalid or non-HTTPS configuration fails closed and disables network delivery.
-pub const TELEMETRY_ENDPOINT: Option<&str> = option_env!("OOOSPLAT_TELEMETRY_ENDPOINT");
-const TELEMETRY_TIMEOUT: Duration = Duration::from_secs(4);
+#[cfg(test)]
+pub const TELEMETRY_ENDPOINT: Option<&str> = None;
 const TELEMETRY_SCHEMA_VERSION: u32 = 2;
 const CURRENT_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -53,7 +54,7 @@ impl Default for TelemetryConfig {
         Self {
             schema_version: TELEMETRY_SCHEMA_VERSION,
             install_id: Uuid::new_v4(),
-            analytics_enabled: true,
+            analytics_enabled: false,
             consent_decided: true,
             last_heartbeat_date: None,
             last_heartbeat_app_version: None,
@@ -70,72 +71,32 @@ struct RuntimeState {
 #[derive(Clone)]
 enum Delivery {
     Disabled,
-    Debug,
-    Http {
-        endpoint: reqwest::Url,
-        client: reqwest::Client,
-    },
     #[cfg(test)]
     Recording(Arc<std::sync::Mutex<Vec<serde_json::Value>>>),
 }
 
 impl Delivery {
     fn from_environment() -> Self {
-        if std::env::var("OOOSPLAT_TELEMETRY_DEBUG").as_deref() == Ok("1") {
-            return Self::Debug;
-        }
-        let Some(raw_endpoint) = TELEMETRY_ENDPOINT else {
-            return Self::Disabled;
-        };
-        let Ok(endpoint) = reqwest::Url::parse(raw_endpoint) else {
-            return Self::Disabled;
-        };
-        if endpoint.scheme() != "https" {
-            return Self::Disabled;
-        }
-        let Ok(client) = reqwest::Client::builder()
-            .connect_timeout(TELEMETRY_TIMEOUT)
-            .timeout(TELEMETRY_TIMEOUT)
-            .user_agent(concat!("OOOSplat/", env!("CARGO_PKG_VERSION")))
-            .build()
-        else {
-            return Self::Disabled;
-        };
-        Self::Http { endpoint, client }
+        Self::Disabled
     }
 
     fn status(&self) -> TelemetryDeliveryStatus {
         match self {
             Self::Disabled => TelemetryDeliveryStatus::NotConfigured,
-            Self::Debug => TelemetryDeliveryStatus::Debug,
-            Self::Http { .. } => TelemetryDeliveryStatus::Configured,
             #[cfg(test)]
             Self::Recording(_) => TelemetryDeliveryStatus::Debug,
         }
     }
 
-    async fn deliver(&self, payload: serde_json::Value) -> bool {
+    async fn deliver(&self, _payload: serde_json::Value) -> bool {
         match self {
             Self::Disabled => false,
-            Self::Debug => {
-                eprintln!(
-                    "OOOSPLAT_TELEMETRY_DEBUG {}",
-                    serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into())
-                );
-                true
-            }
-            Self::Http { endpoint, client } => client
-                .post(endpoint.clone())
-                .json(&payload)
-                .send()
-                .await
-                .is_ok_and(|response| response.status().is_success()),
             #[cfg(test)]
             Self::Recording(events) => {
                 events
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .push(payload);
+                    .push(_payload);
                 true
             }
         }
@@ -362,9 +323,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn production_endpoint_is_compiled_from_the_public_project_config() {
+    fn fork_never_uses_an_upstream_telemetry_endpoint() {
         let configured = include_str!("../../../config/telemetry-endpoint.txt").trim();
-        assert_eq!(TELEMETRY_ENDPOINT, Some(configured));
+        assert!(configured.is_empty());
+        assert_eq!(TELEMETRY_ENDPOINT, None);
+        assert!(matches!(Delivery::from_environment(), Delivery::Disabled));
     }
 
     #[tokio::test]
@@ -381,7 +344,7 @@ mod tests {
         second.preferences().await.unwrap();
         let second_config = second.state.lock().await.config.clone().unwrap();
         assert_eq!(first_config.install_id, second_config.install_id);
-        assert!(second_config.analytics_enabled);
+        assert!(!second_config.analytics_enabled);
         assert!(second_config.consent_decided);
     }
 
@@ -488,12 +451,12 @@ mod tests {
             delivery: Delivery::Disabled,
         };
 
-        assert!(service.preferences().await.unwrap().analytics_enabled);
+        assert!(!service.preferences().await.unwrap().analytics_enabled);
         assert!(
             !service
                 .deliver_if_enabled(TelemetryEvent::DailyActive)
                 .await
         );
-        assert!(service.preferences().await.unwrap().analytics_enabled);
+        assert!(!service.preferences().await.unwrap().analytics_enabled);
     }
 }

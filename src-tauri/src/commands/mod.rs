@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -313,6 +314,7 @@ pub async fn probe_and_plan(
     let engine_paths = paths_for_app(&app);
     let samples = catalog::runtime_samples().await;
     let input = PathBuf::from(path);
+    crate::photos::validate_input(&input, quality)?;
     if input.is_dir() {
         let image_sequence = tokio::task::spawn_blocking({
             let input = input.clone();
@@ -481,6 +483,7 @@ pub async fn start_pipeline(
     path: String,
     quality: Quality,
     projects_root: String,
+    task_name: String,
 ) -> std::result::Result<PipelineResult, PipelineCommandError> {
     let emitter = app.clone();
     let telemetry_session = Arc::new(PipelineTelemetrySession::new(
@@ -506,7 +509,12 @@ pub async fn start_pipeline(
     }
     telemetry_session.generation_started();
     let result = runner
-        .generate(Path::new(&path), quality, Path::new(&projects_root))
+        .generate_named(
+            Path::new(&path),
+            quality,
+            Path::new(&projects_root),
+            &task_name,
+        )
         .await;
     match &result {
         Ok(output) => telemetry_session.generation_completed(
@@ -830,12 +838,12 @@ pub async fn begin_gaussian_edit_save(
     if let Some(crop) = edit_state.crop {
         crop.validate()?;
     }
-    if !state
+    if state
         .active
         .lock()
         .await
         .as_ref()
-        .is_some_and(|session| session.project_id == project_id)
+        .is_none_or(|session| session.project_id != project_id)
     {
         return Err(SplatError::Process(
             "项目当前未在预览中打开，无法保存编辑".into(),
@@ -881,9 +889,9 @@ pub async fn commit_gaussian_edit_save(
         }
     };
     let mut active = state.edit_save.lock().await;
-    if !active
+    if active
         .as_ref()
-        .is_some_and(|session| session.edit_id == edit_id)
+        .is_none_or(|session| session.edit_id != edit_id)
     {
         return Err(SplatError::Process(
             "Gaussian 编辑保存会话不存在或已结束".into(),
@@ -1074,7 +1082,7 @@ pub async fn begin_gaussian_video_export(
         .is_none_or(|session| session.project_id != project_id)
     {
         return Err(SplatError::Process(
-            "该项目当前未在 OOOSplat 预览中打开，无法导出视频。".into(),
+            "该项目当前未在 IA'GS 预览中打开，无法导出视频。".into(),
         ));
     }
     drop(active);

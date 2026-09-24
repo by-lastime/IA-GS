@@ -1,3 +1,4 @@
+// Modified for IA'GS (2026-09-24); see docs/CHANGES_FROM_UPSTREAM.md.
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -150,22 +151,75 @@ pub async fn extract_features(
     gpu_index: Option<u32>,
 ) -> Result<()> {
     let (use_gpu_option, gpu_index_option) = feature_gpu_options(executable, manager).await?;
-    run_colmap(
-        executable,
-        feature_extraction_args(
-            database,
-            images,
-            masks,
-            gpu_index,
-            use_gpu_option,
-            gpu_index_option,
-        ),
-        database.parent().unwrap_or(images),
-        log,
-        manager,
-        observer,
-    )
-    .await
+    // IA'GS: PNGs have no reliable EXIF; use the recorded, resized intrinsics.
+    let working = database.parent().unwrap_or(images);
+    let resolved_images = if images.is_absolute() {
+        images.to_path_buf()
+    } else {
+        working.join(images)
+    };
+    let groups_path = resolved_images.join("camera-groups.json");
+    if groups_path.is_file() {
+        let groups: Vec<crate::photos::CameraGroup> =
+            serde_json::from_slice(&std::fs::read(groups_path)?)?;
+        for (index, group) in groups.iter().enumerate() {
+            let list = working.join(format!("camera-group-{index}.txt"));
+            std::fs::write(&list, group.images.join("\n") + "\n")?;
+            let mut args = feature_extraction_args(
+                database,
+                images,
+                masks,
+                gpu_index,
+                use_gpu_option,
+                gpu_index_option,
+            );
+            let camera_flag = args
+                .iter()
+                .position(|a| a == "--ImageReader.single_camera")
+                .unwrap()
+                + 1;
+            args[camera_flag] = "1".into();
+            args.extend(["--image_list_path".into(), list.into_os_string()]);
+            if let Some(focal) = group.focal_pixels {
+                args.extend([
+                    "--ImageReader.camera_params".into(),
+                    format!(
+                        "{focal},{},{},0",
+                        group.width as f64 / 2.0,
+                        group.height as f64 / 2.0
+                    )
+                    .into(),
+                ]);
+            }
+            run_colmap(
+                executable,
+                args,
+                working,
+                log.clone(),
+                manager,
+                observer.clone(),
+            )
+            .await?;
+        }
+        Ok(())
+    } else {
+        run_colmap(
+            executable,
+            feature_extraction_args(
+                database,
+                images,
+                masks,
+                gpu_index,
+                use_gpu_option,
+                gpu_index_option,
+            ),
+            working,
+            log,
+            manager,
+            observer,
+        )
+        .await
+    }
 }
 
 pub async fn match_sequential(
@@ -233,7 +287,7 @@ fn feature_extraction_args(
         "--ImageReader.camera_model".into(),
         "SIMPLE_RADIAL".into(),
         "--ImageReader.single_camera".into(),
-        "1".into(),
+        "0".into(),
         use_gpu_option.into(),
         (if gpu_index.is_some() { "1" } else { "0" }).into(),
     ];

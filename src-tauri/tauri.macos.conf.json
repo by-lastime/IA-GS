@@ -9,7 +9,7 @@
     "macOS": {
       "frameworks": [],
       "minimumSystemVersion": "15.0",
-      "signingIdentity": null
+      "signingIdentity": "-"
     }
   }
 }
