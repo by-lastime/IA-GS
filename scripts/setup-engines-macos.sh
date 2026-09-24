@@ -11,62 +11,77 @@ workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 manifest="$workspace/engines/manifest.macos.json"
 cache="$workspace/.cache/engines/macos"
 destination="$workspace/engines/macos/arm64"
-
 read_manifest() {
   node -e 'const m=require(process.argv[1]); let v=m; for (const key of process.argv[2].split(".")) v=v[key]; process.stdout.write(String(v));' "$manifest" "$1"
 }
-
-archive_name="$(read_manifest distribution.archiveName)"
-archive="$cache/$archive_name"
-checksum="$archive.sha256"
-
 mkdir -p "$cache" "$(dirname "$destination")"
+format="$(read_manifest distribution.format)"
 if [[ -n "${OOOSPLAT_MACOS_ENGINE_ARCHIVE:-}" ]]; then
-  source_archive="$OOOSPLAT_MACOS_ENGINE_ARCHIVE"
-  [[ -f "$source_archive" ]] || { echo "Missing local engine archive: $source_archive" >&2; exit 1; }
-  cp "$source_archive" "$archive"
-  if [[ -f "$source_archive.sha256" ]]; then
-    cp "$source_archive.sha256" "$checksum"
+  # Explicit local override for maintainers rebuilding the upstream engine bundle.
+  archive="$OOOSPLAT_MACOS_ENGINE_ARCHIVE"
+  [[ -f "$archive" ]] || { echo "Missing local engine archive: $archive" >&2; exit 1; }
+  case "$archive" in
+    *.tar.xz) format=tar.xz ;;
+    *.dmg) format=dmg ;;
+    *) echo "Local runtime must be a .dmg or .tar.xz file." >&2; exit 1 ;;
+  esac
+  if [[ -f "$archive.sha256" ]]; then
+    expected="$(awk 'NF { print tolower($1); exit }' "$archive.sha256")"
   else
-    (cd "$cache" && shasum -a 256 "$(basename "$archive")" > "$(basename "$checksum")")
+    expected="$(shasum -a 256 "$archive" | awk '{ print tolower($1) }')"
   fi
 else
-  source_url="$(read_manifest distribution.sourceUrl)"
-  checksum_url="$(read_manifest distribution.archiveSha256File)"
-  curl --fail --location --retry 3 "$source_url" --output "$archive"
-  curl --fail --location --retry 3 "$checksum_url" --output "$checksum"
+  archive="$cache/$(read_manifest distribution.archiveName)"
+  expected="$(read_manifest distribution.archiveSha256)"
+  # Only reuse a fully downloaded file whose digest matches the source manifest.
+  if [[ ! -f "$archive" ]] || [[ "$(shasum -a 256 "$archive" | awk '{ print tolower($1) }')" != "$expected" ]]; then
+    curl --fail --location --retry 3 "$(read_manifest distribution.sourceUrl)" --output "$archive.download"
+    mv "$archive.download" "$archive"
+  fi
 fi
-
-expected="$(awk 'NF { print tolower($1); exit }' "$checksum")"
-[[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid release checksum file." >&2; exit 1; }
+[[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid archive checksum." >&2; exit 1; }
 actual="$(shasum -a 256 "$archive" | awk '{ print tolower($1) }')"
 [[ "$actual" == "$expected" ]] || { echo "macOS engine archive SHA-256 mismatch." >&2; exit 1; }
-if [[ -z "${OOOSPLAT_MACOS_ENGINE_ARCHIVE:-}" ]]; then
-  pinned="$(read_manifest distribution.archiveSha256)"
-  [[ "$actual" == "$pinned" ]] || { echo "Engine archive differs from the checksum pinned in source." >&2; exit 1; }
-fi
-
-if tar -tJf "$archive" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
-  echo "Unsafe path found in macOS engine archive." >&2
-  exit 1
-fi
 
 temporary="$(mktemp -d)"
-trap 'rm -rf -- "$temporary"' EXIT
-tar -xJf "$archive" -C "$temporary"
-runtime_root="$temporary/ooosplat-engines-macos-arm64"
-[[ -d "$runtime_root" ]] || { echo "Unexpected macOS engine archive layout." >&2; exit 1; }
-
+mount="$temporary/mount"
+mounted=0
+cleanup() {
+  if [[ "$mounted" == 1 ]]; then hdiutil detach "$mount" >/dev/null 2>&1 || true; fi
+  rm -rf -- "$temporary"
+}
+trap cleanup EXIT
 staged="$temporary/runtime"
-mv "$runtime_root" "$staged"
-# The destination contains a tracked placeholder README so a fresh clone has the
-# resource directory before engines are installed. Preserve it across the
-# all-at-once runtime replacement; otherwise setup leaves the worktree dirty by
-# deleting a tracked file.
-if [[ -f "$destination/README.md" ]]; then
-  cp "$destination/README.md" "$staged/README.md"
-fi
+case "$format" in
+  dmg)
+    mkdir -p "$mount"
+    # The official upstream image carries the preserved Apache-2.0 notice.
+    # Read-only mounting extracts dependencies; it does not install OOOSplat.
+    if ! printf 'Y\n' | hdiutil attach "$archive" -readonly -nobrowse -mountpoint "$mount" >"$temporary/mount.log" 2>&1; then
+      tail -n 8 "$temporary/mount.log" >&2
+      exit 1
+    fi
+    mounted=1
+    runtime_root="$mount/$(read_manifest distribution.runtimePath)"
+    [[ -d "$runtime_root/bin" && -f "$runtime_root/SHA256SUMS" ]] || { echo "Official installer is missing the expected runtime." >&2; exit 1; }
+    ditto "$runtime_root" "$staged"
+    hdiutil detach "$mount" >/dev/null
+    mounted=0
+    ;;
+  tar.xz)
+    if tar -tJf "$archive" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+      echo "Unsafe path found in macOS engine archive." >&2; exit 1
+    fi
+    tar -xJf "$archive" -C "$temporary"
+    runtime_root="$temporary/ooosplat-engines-macos-arm64"
+    [[ -d "$runtime_root" ]] || { echo "Unexpected macOS engine archive layout." >&2; exit 1; }
+    mv "$runtime_root" "$staged"
+    ;;
+  *) echo "Unsupported runtime format: $format" >&2; exit 1 ;;
+esac
+# Verify content before replacing a runtime that may already be working.
+(cd "$staged" && shasum -a 256 -c SHA256SUMS)
+if [[ -f "$destination/README.md" ]]; then cp "$destination/README.md" "$staged/README.md"; fi
 rm -rf -- "$destination"
 mv "$staged" "$destination"
-
 "$workspace/scripts/verify-engines-macos.sh"

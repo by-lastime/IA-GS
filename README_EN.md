@@ -76,7 +76,7 @@ npm run setup:engines:macos
 npm run start:app
 ```
 
-Engine setup downloads and checks the upstream runtime specified by the manifest. `start:app` builds the native photo helper and launches Tauri. `npm run dev` alone serves the frontend and cannot perform native file processing or reconstruction.
+Engine setup downloads the official OOOSplat installer with a pinned SHA-256, mounts it read-only and extracts/verifies its runtime without installing or launching OOOSplat. `start:app` builds the native photo helper and launches Tauri. `npm run dev` alone serves the frontend and cannot perform native file processing or reconstruction.
 
 ```sh
 # Build .app and .dmg

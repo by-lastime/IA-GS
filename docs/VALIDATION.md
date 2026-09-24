@@ -91,3 +91,11 @@ IAGS_TEST_PREPARATION='/path/to/completed-project' cargo test --manifest-path sr
 ```sh
 IAGS_TEST_BRUSH_DATASET='/path/to/project/work/brush/dataset' cargo test --manifest-path src-tauri/Cargo.toml --test brush_progress -- --ignored --nocapture
 ```
+
+
+## GitHub 公开发布检查（2026-09-24）
+
+- 公共源码树经过凭据、个人路径和生成模型检查；不包含照片、模型、日志、原生引擎或安装包。提交作者使用 GitHub noreply 邮箱，保留 33 条上游提交历史。
+- 首次 GitHub Actions 在干净的 macOS arm64 环境完成依赖安装、原生助手构建、许可证检查、前端测试／构建、Rust 测试与 Clippy，全部通过。对应运行：https://github.com/by-lastime/IA-GS/actions/runs/35990153682 。
+- 核实旧独立引擎地址返回 404 后，源码安装流程改为下载官方 OOOSplat 0.4.1 macOS DMG，核对固定 SHA-256，只读挂载并提取引擎，不安装或运行上游应用。已在独立的干净源码目录执行下载与提取，并通过内置引擎校验。
+- 公开发行附件仅为 IA'GS DMG 和 SHA256SUMS。独立引擎压缩包保留本地，不上传 GitHub。

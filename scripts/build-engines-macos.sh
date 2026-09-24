@@ -263,7 +263,7 @@ fs.writeFileSync(path.join(process.argv[2],"BUILD-INFO.json"),JSON.stringify(out
   shasum -a 256 BUILD-INFO.json BUNDLED-COMPONENTS.json >> SHA256SUMS
 )
 
-archive_name="$(read_manifest distribution.archiveName)"
+archive_name="$(read_manifest distribution.sourceBuildArchiveName)"
 archive="$output/$archive_name"
 rm -f -- "$archive" "$archive.sha256"
 tar -cJf "$archive" -C "$cache/stage" ooosplat-engines-macos-arm64

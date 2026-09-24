@@ -91,7 +91,7 @@ npm run setup:engines:macos
 npm run start:app
 ```
 
-首次设置会下载清单中指定的上游引擎并校验完整性。`start:app` 构建原生照片助手并启动 Tauri 开发窗口。`npm run dev` 只启动网页开发服务，不能独立运行本地文件处理和重建。
+首次设置会下载 SHA-256 固定的 OOOSplat 官方安装器，以只读方式提取并校验其中的引擎；不会安装或启动 OOOSplat。`start:app` 构建原生照片助手并启动 Tauri 开发窗口。`npm run dev` 只启动网页开发服务，不能独立运行本地文件处理和重建。
 
 ```sh
 # 生成 .app 与 .dmg
